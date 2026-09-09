@@ -337,7 +337,12 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	c.str(a64::x30, arm::Mem(a64::x14, 112));
 
 	// Load REG_Base - use absolute jump target to bypass rel jmp range limits
-	c.mov(a64::x19, Imm(reinterpret_cast<u64>(&vm::g_exec_addr)));
+	// A 64-bit immediate in x19 costs movz+movk+movk+movk; loading the same
+	// address from the literal pool costs adrp+ldr. This runs once per GHC
+	// gate hop, i.e. on every host<->guest transition, so the difference is
+	// real on the hot path. Same trick for g_base_addr below.
+	Label exec_addr_lit = c.newLabel();
+	c.ldr(a64::x19, arm::ptr(exec_addr_lit));
 	c.ldr(a64::x19, arm::Mem(a64::x19));
 	// Load PPUThread struct base -> REG_Sp
 	const arm::GpX ppu_t_base = a64::x20;
@@ -364,7 +369,8 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	c.lsl(reg_hp.w(), reg_hp.w(), 13);
 
 	// Load registers
-	c.mov(a64::x22, Imm(reinterpret_cast<u64>(&vm::g_base_addr)));
+	Label base_addr_lit = c.newLabel();
+	c.ldr(a64::x22, arm::ptr(base_addr_lit));
 	c.ldr(a64::x22, arm::Mem(a64::x22));
 
 	const arm::GpX gpr_addr_reg = a64::x9;
@@ -414,6 +420,12 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	// Return
 	c.mov(a64::sp, a64::x15);
 	c.ret(a64::x30);
+
+	// Literal pool for the two absolute addresses the gateway loads.
+	c.bind(exec_addr_lit);
+	c.embedUInt64(reinterpret_cast<u64>(&vm::g_exec_addr));
+	c.bind(base_addr_lit);
+	c.embedUInt64(reinterpret_cast<u64>(&vm::g_base_addr));
 #endif
 });
 

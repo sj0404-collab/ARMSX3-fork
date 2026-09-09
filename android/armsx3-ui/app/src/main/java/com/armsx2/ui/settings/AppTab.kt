@@ -203,6 +203,7 @@ fun AppTab() {
             com.armsx2.update.UpdaterEntry()
         }
         ConfigDatabaseRow()
+        PresetRow()
         Surface(
             onClick = { UiNavigator.navigate(AppRoute.Language) },
             modifier = Modifier.fillMaxWidth()
@@ -912,6 +913,86 @@ private fun ClearCacheRow() {
  *  individual games, are invisible from here, and wiping them from a global page would be a
  *  surprise. Controller binds live in ControllerMappings and keep their own reset. */
 @Composable
+/**
+ * Command row that applies a whole-core [com.armsx3.Rpcs3Settings.PerformancePreset].
+ *
+ * Presets write every value straight into RPCS3's live config tree via settingsSet, so unlike
+ * the per-row Settings edits they do not flow through ConfigStore -- the core persists them
+ * itself when the VM shuts down. Because that means the write is immediate and un-undoable
+ * (except by applying another preset), each chip routes through ConfirmOverlay before applying.
+ */
+@Composable
+private fun PresetRow() {
+    val context = LocalContext.current
+    var chosen by remember {
+        mutableStateOf<com.armsx3.Rpcs3Settings.PerformancePreset>(com.armsx3.Rpcs3Settings.PerformancePreset.Balanced)
+    }
+    var confirming by remember { mutableStateOf<com.armsx3.Rpcs3Settings.PerformancePreset?>(null) }
+
+    fun label(preset: com.armsx3.Rpcs3Settings.PerformancePreset): String = when (preset) {
+        com.armsx3.Rpcs3Settings.PerformancePreset.Balanced -> str("preset.balanced")
+        com.armsx3.Rpcs3Settings.PerformancePreset.Performance -> str("preset.performance")
+        com.armsx3.Rpcs3Settings.PerformancePreset.Maximum -> str("preset.maximum")
+    }
+    fun desc(preset: com.armsx3.Rpcs3Settings.PerformancePreset): String = when (preset) {
+        com.armsx3.Rpcs3Settings.PerformancePreset.Balanced -> str("preset.balanced.desc")
+        com.armsx3.Rpcs3Settings.PerformancePreset.Performance -> str("preset.performance.desc")
+        com.armsx3.Rpcs3Settings.PerformancePreset.Maximum -> str("preset.maximum.desc")
+    }
+
+    Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+        Text(str("preset.title"), style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            str("preset.description"),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            com.armsx3.Rpcs3Settings.PerformancePreset.entries.forEach { preset ->
+                FilterChip(
+                    selected = chosen == preset,
+                    onClick = { confirming = preset },
+                    label = { Text(label(preset)) },
+                    shape = RoundedCornerShape(11.dp),
+                    modifier = Modifier.controllerFocusable(
+                        "settings.preset.${preset.name}",
+                        RoundedCornerShape(11.dp),
+                        onConfirm = { confirming = preset },
+                    ),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            desc(chosen),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    confirming?.let { pending ->
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = label(pending),
+            message = str("preset.apply.confirm"),
+            confirmLabel = str("preset.apply"),
+            destructive = false,
+            idPrefix = "settings-preset-${pending.name}",
+            onConfirm = {
+                runCatching { com.armsx3.Rpcs3Settings.applyPreset(pending) }
+                chosen = pending
+                confirming = null
+                Toast.makeText(context, str("preset.applied"), Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { confirming = null },
+        )
+    }
+}
+
 private fun ResetAllSettingsRow() {
     var confirming by remember { mutableStateOf(false) }
 

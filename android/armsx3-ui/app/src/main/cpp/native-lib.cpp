@@ -225,6 +225,25 @@ struct RPCSXLibrary : RPCSXApi {
     result.patchSetEnabled = reinterpret_cast<decltype(patchSetEnabled)>(dlsym(handle, "_rpcsx_patchSetEnabled"));
     // clang-format on
 
+    // A partially-exported core cannot be saved by the frontend -- every call
+    // through a missing symbol would fail, and the semantics of a failure that
+    // is indistinguishable from "no core loaded" are worse than the load simply
+    // refusing. These are the ones everything else rides on; anything older
+    // still missing them must not masquerade as healthy.
+    const void* required[] = {
+      result.initialize, result.boot, result.getState,
+      result.settingsSet, result.shutdown, result.surfaceEvent,
+    };
+    for (const void* symbol : required) {
+      if (symbol == nullptr) {
+        __android_log_print(ANDROID_LOG_ERROR, "RPCSX-UI",
+                            "core at %s is missing a required export; refusing to load it",
+                            path);
+        ::dlclose(handle);
+        return {};
+      }
+    }
+
     return result;
   }
 };
@@ -232,7 +251,15 @@ struct RPCSXLibrary : RPCSXApi {
 static RPCSXLibrary rpcsxLib;
 
 static std::string unwrap(JNIEnv *env, jstring string) {
+  if (string == nullptr) {
+    return {};
+  }
   auto resultBuffer = env->GetStringUTFChars(string, nullptr);
+  if (resultBuffer == nullptr) {
+    // OOM / pending exception. Returning an empty string lets the caller
+    // continue instead of passing a null pointer to std::string and crashing.
+    return {};
+  }
   std::string result(resultBuffer);
   env->ReleaseStringUTFChars(string, resultBuffer);
   return result;
@@ -394,8 +421,12 @@ extern "C" JNIEXPORT jint JNICALL Java_net_rpcsx_RPCSX_boot(JNIEnv *env,
   // The core is dlopen()ed separately and may not be up yet -- during
   // onboarding, or if it failed to load. Calling through a null pointer
   // is an instant SIGSEGV, so fail the call instead.
+  //
+  // game_boot_result::generic_error is ordinal 1; macro-returning 0 would
+  // report "NoErrors" for a boot that never happened, which the Kotlin side
+  // turns into "silent success on a VM that never started".
   if (rpcsxLib.boot == nullptr) {
-      return 0;
+      return 1; // game_boot_result::generic_error
   }
 
   return rpcsxLib.boot(unwrap(env, jpath));
@@ -406,8 +437,11 @@ extern "C" JNIEXPORT jint JNICALL Java_net_rpcsx_RPCSX_getState(JNIEnv *env,
   // The core is dlopen()ed separately and may not be up yet -- during
   // onboarding, or if it failed to load. Calling through a null pointer
   // is an instant SIGSEGV, so fail the call instead.
+  //
+  // EmulatorState::Stopped is ordinal 0, which is the right answer with no
+  // core loaded.
   if (rpcsxLib.getState == nullptr) {
-      return 0;
+      return 0; // EmulatorState::Stopped
   }
 
   return rpcsxLib.getState();

@@ -244,6 +244,14 @@ class RPCSX {
     external fun getVersion(): String
     external fun setCustomDriver(path: String, libraryName: String, hookDir: String): Boolean
 
+    /** Redirect dev_flash (firmware) to an external POSIX directory.  null reverts to the
+     *  default inside the app's data root.  Updates FirmwareRepository state; the actual
+     *  redirect happens via the VFS config written during Rpcs3Bridge.initialize(). */
+    fun setFirmwareDir(dir: String?): Boolean {
+        net.rpcsx.FirmwareRepository.setExternalFirmwareDir(dir)
+        return true
+    }
+
 
     companion object {
         var initialized = false

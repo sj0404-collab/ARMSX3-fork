@@ -736,6 +736,23 @@ open class MainActivityRuntime : ComponentActivity() {
                     // actually unwound, so users can't launch the next game
                     // while the previous VM is still tearing down.
                     eState.value = EmuState.STOPPED
+                    // Cloud saves: a game just exited and its save data is
+                    // fresh — push it before anything else can overwrite the
+                    // memory card. Fire-and-forget: this runs on the run-loop
+                    // thread and the app stays alive afterwards, so the upload
+                    // has real time and must not block the launch of the next
+                    // title. Idempotent (PUT overwrite), so the shutdown push
+                    // in onDestroy is a harmless duplicate.
+                    if (booted && com.armsx2.CloudSync.autoPush &&
+                        com.armsx2.CloudSync.config != null
+                    ) {
+                        kotlin.concurrent.thread(name = "cloud-sync-exit") {
+                            runCatching {
+                                val pushed = com.armsx2.CloudSync.pushAllSaves()
+                                android.util.Log.i("CloudSync", "game-exit sync pushed $pushed save(s)")
+                            }
+                        }
+                    }
                     val restartNow = synchronized(vmLifecycleLock) {
                         vmRunLoopActive = false
                         vmStopInProgress = false
@@ -2146,6 +2163,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.LibraryMusic.load()
         com.armsx2.PauseMusic.load()
         com.armsx2.MenuSfx.load(applicationContext)
+        com.armsx2.CloudSync.load()
         com.armsx2.ControllerSkinStore.load(applicationContext)
         // Low-battery / high-temperature banners. Registers for the sticky battery broadcast, so
         // there is no polling; the toggle lives in App settings.
@@ -4904,6 +4922,24 @@ open class MainActivityRuntime : ComponentActivity() {
         // down (it would flicker away and rebuild on every rotation/density change).
         runCatching { com.armsx2.SecondScreen.release(applicationContext) }
         NativeApp.shutdown()
+        // Push the save data to the cloud when a sync target is configured.
+        // This process is killed at the end of onDestroy, so a detached thread
+        // would usually be SIGKILLed mid-upload and lose the LAST saves. Run it
+        // on a worker and hold the teardown for a bounded window instead: the
+        // upload either completes or gives up, and only then does the app die.
+        if (com.armsx2.CloudSync.autoPush && com.armsx2.CloudSync.config != null) {
+            val done = java.util.concurrent.CountDownLatch(1)
+            kotlin.concurrent.thread(name = "cloud-sync-final") {
+                runCatching {
+                    val pushed = com.armsx2.CloudSync.pushAllSaves()
+                    android.util.Log.i("CloudSync", "final sync pushed $pushed save(s)")
+                }
+                done.countDown()
+            }
+            // Bounded generosity: save data is small, but a dead server must not
+            // trap a dying activity on the main thread past this.
+            runCatching { done.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        }
         super.onDestroy()
 
         val appPid = Process.myPid()

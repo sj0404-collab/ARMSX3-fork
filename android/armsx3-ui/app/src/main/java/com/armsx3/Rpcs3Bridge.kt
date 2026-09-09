@@ -184,6 +184,50 @@ object Rpcs3Bridge {
         }
     }
 
+    /**
+     * If a user has chosen an external firmware directory, write the dev_flash
+     * override into the VFS config so that the core mounts firmware from there.
+     * Must be called BEFORE [RPCSX.instance.initialize], which triggers
+     * cfg_vfs::load() inside the C++ layer.
+     *
+     * Writes a minimal vfs.yml containing only the dev_flash override. If the
+     * user later removes the override, the file is rewritten without it.
+     */
+    private fun applyFirmwareRedirect() {
+        val extDir = net.rpcsx.FirmwareRepository.externalFirmwareDir.value
+        val root = RPCSX.rootDirectory
+        val configDir = java.io.File(root, "config")
+        configDir.mkdirs()
+        val vfsFile = java.io.File(configDir, "vfs.yml")
+
+        // cfg_vfs is a cfg::node whose ROOT serializes as a flat map — there is no
+        // "VFS:" wrapper level (Utilities/Config.cpp node::to_string/encode emits the
+        // children directly; cfg::node::from_string + decode matches the top-level keys
+        // against the member names emulator_dir, /dev_hdd0/, /dev_flash/, ...). A file
+        // that opens with "VFS:" is a no-op: decode looks for a child literally named
+        // "VFS", finds none, and silently keeps the in-memory defaults. Keys that are
+        // absent keep their defaults on load, so overriding just /dev_flash/ is enough.
+        val yaml = if (extDir != null && extDir.isNotBlank()) {
+            // Ensure trailing slash for VFS compatibility.
+            val normalized = if (extDir.endsWith("/")) extDir else "$extDir/"
+            buildString {
+                appendLine("emulator_dir: $(EmulatorDir)")
+                appendLine("/dev_flash/: \"$normalized\"")
+            }
+        } else {
+            // No override — let the core use its default vfs.yml.
+            if (vfsFile.exists()) vfsFile.delete()
+            return
+        }
+
+        try {
+            vfsFile.writeText(yaml)
+            android.util.Log.i("ARMSX3", "firmware redirect -> $extDir")
+        } catch (e: Exception) {
+            android.util.Log.e("ARMSX3", "failed to write vfs.yml for firmware redirect", e)
+        }
+    }
+
     @JvmStatic
     fun initialize(rootPath: String) {
         if (RPCSX.initialized) return
@@ -195,6 +239,13 @@ object Rpcs3Bridge {
         runCatching { com.armsx2.config.ConfigDatabase.purgeIfStale() }
         // Applies whether or not the database was ever downloaded.
         runCatching { com.armsx2.config.ConfigDatabase.ensureLocalOverrides() }
+
+        // If an external firmware directory was chosen, write it into the VFS
+        // config so that the core's Emu.Init() mounts dev_flash from the external
+        // location instead of from the app-private tree.  The file is read by
+        // cfg_vfs::load() which runs inside _rpcsx_initialize().
+        applyFirmwareRedirect()
+
         RPCSX.instance.initialize(RPCSX.rootDirectory, "00000001", com.armsx2.DeviceTier.socIdentity())
         RPCSX.initialized = true
 
@@ -321,6 +372,19 @@ object Rpcs3Bridge {
         // written and never started, which is why vibration did nothing in any game.
         startRumblePump()
         startSixaxis()
+
+        // If the settle wait above never saw the state leave Stopped, the core
+        // reported NoErrors but never actually started. Returning true here sent
+        // the UI past the error check to a black screen and hid every clue that
+        // the boot had failed -- runVMThread reports true, the library hides,
+        // and there is no toast.
+        if (RPCSX.getState() == EmulatorState.Stopped) {
+            lastBootError = "booted but did not start"
+            android.util.Log.e("ARMSX3", "boot returned NoErrors but state is still Stopped; the VM never started")
+            stopRumblePump()
+            stopSixaxis()
+            return false
+        }
 
         try {
             while (!stopRequested && RPCSX.getState() != EmulatorState.Stopped) {
@@ -911,8 +975,13 @@ object Rpcs3Bridge {
 
     @JvmStatic
     fun getFps(): Float {
-        Unsupported.note("getFPS")
-        return 0f
+        // The core already exports the flip-to-flip period; FPS is just its
+        // reciprocal. It returns 0 until the first frame is measured, so a 0
+        // here genuinely means "not yet" rather than "stub".
+        return runCatching {
+            val periodNs = RPCSX.instance.getFramePeriodNs()
+            if (periodNs > 0) 1_000_000_000f / periodNs else 0f
+        }.getOrDefault(0f)
     }
 
     // ---------------------------------------------------------------

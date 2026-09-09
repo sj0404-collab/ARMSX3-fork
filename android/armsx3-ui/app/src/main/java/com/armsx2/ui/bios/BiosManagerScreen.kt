@@ -60,6 +60,8 @@ fun BiosManagerScreen(onBack: () -> Unit, game: com.armsx2.GameInfo? = null) {
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var showBrowser by remember { mutableStateOf(false) }
+    var showFolderPicker by remember { mutableStateOf(false) }
+    val externalDir by FirmwareRepository.externalFirmwareDir
 
     // Re-read fw.json on entry. Firmware may have been installed by the setup
     // wizard in this same session, and the repository is otherwise only loaded
@@ -102,6 +104,25 @@ fun BiosManagerScreen(onBack: () -> Unit, game: com.armsx2.GameInfo? = null) {
     val safPicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(installFirmware) }
+
+    // Directory tree picker for external firmware location.
+    val dirPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            // Resolve the SAF tree URI to a POSIX path.
+            val posixPath = runCatching {
+                com.armsx2.runtime.MainActivityRuntime.resolveTreeUriToPosix(uri)
+            }.getOrNull()
+            if (posixPath != null) {
+                net.rpcsx.FirmwareRepository.setExternalFirmwareDir(posixPath)
+                message = "External firmware directory set: $posixPath"
+            } else {
+                message = I18n.get("bios.firmware.failed")
+            }
+            showFolderPicker = false
+        }
+    }
 
     if (showBrowser) {
         FileBrowserDialog(
@@ -230,6 +251,81 @@ fun BiosManagerScreen(onBack: () -> Unit, game: com.armsx2.GameInfo? = null) {
                 .controllerFocusable("firmware.back", RoundedCornerShape(13.dp), onConfirm = onBack),
         ) {
             Text(str("action.back"))
+        }
+
+        // External firmware directory: lets the user point the emulator at a
+        // POSIX directory containing dev_flash (installed firmware files) rather
+        // than keeping them inside the app's data root.  Useful when sharing
+        // one firmware install between multiple emulators, when the app-private
+        // tree is near its quota, or when the firmware lives on removable
+        // storage that can be swapped between sessions.
+        if (status != FirmwareStatus.None) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "External Firmware Directory",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    val dirText = externalDir?.takeIf { it.isNotBlank() }
+                        ?: "Using internal storage (default)"
+                    Text(
+                        dirText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "Select a folder containing dev_flash/. Firmware files will be read from " +
+                            "there instead of the app's internal storage.  The app must be " +
+                            "restarted for the change to take effect.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        OutlinedButton(
+                            onClick = { dirPicker.launch(null) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .controllerFocusable(
+                                    "firmware.external.dir",
+                                    RoundedCornerShape(13.dp),
+                                    onConfirm = { dirPicker.launch(null) },
+                                ),
+                        ) {
+                            Text(if (externalDir != null) "Change" else "Select Folder")
+                        }
+                        if (externalDir != null) {
+                            OutlinedButton(
+                                onClick = {
+                                    net.rpcsx.FirmwareRepository.setExternalFirmwareDir(null)
+                                    message = "Reverted to internal firmware"
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .controllerFocusable(
+                                        "firmware.external.reset",
+                                        RoundedCornerShape(13.dp),
+                                        onConfirm = {
+                                            net.rpcsx.FirmwareRepository.setExternalFirmwareDir(null)
+                                            message = "Reverted to internal firmware"
+                                        },
+                                    ),
+                            ) {
+                                Text("Reset")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     }

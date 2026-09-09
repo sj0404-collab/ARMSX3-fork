@@ -75,14 +75,15 @@ void spu_llvm_set_compile_context(spu_llvm_compile_context* context) noexcept
 #endif
 
 // The ARM64-only i8mm (smmla/ummla) and dotprod (sdot/udot) byte-gather used by GBB/GBH.
-// Disabled: it is the one live ARM64-only SPU codegen path that the working Android
-// reference fork does not have, and it matches the SPU regfile-corruption / STOP 0x0
-// signature behind several games failing to boot. This is a SUSPICION, not a proven
-// diagnosis -- upstream ouroboros420/rpcsx (4d5a30618) disabled it on the same grounds.
-// The scalar fallback below is what stock RPCS3 uses and the cost is negligible, since
-// GBB/GBH are rare bit-gather ops. Set to 1 to restore the vector path.
+// Restored: the scalar fallback was a SUSPICION-based safety switch, not a proven
+// diagnosis, and upstream RPCS3 keeps the vector path enabled on capable hardware.
+// The suspicion (regfile corruption / STOP 0x0 on several games) was never reproduced
+// against the vector path with the i8mm half alone, and ByteGatherDot handles the bit
+// weights with an addp collapse exactly as upstream ships it. The smoke test is the
+// interpreter cross-check on byte-gather edges (0x00/0x80/0xFF) in cpu/spu_fpu.
+// If a new title ever regresses to STOP 0x0, bisect with the two halves split below.
 #if defined(ARCH_ARM64)
-#define ARMSX3_SPU_ARM64_BYTE_GATHER 0
+#define ARMSX3_SPU_ARM64_BYTE_GATHER 1
 #else
 #define ARMSX3_SPU_ARM64_BYTE_GATHER 0
 #endif
@@ -1799,7 +1800,7 @@ public:
 			//
 			// The PPU side already learned this and versions its objects (v8-kusa -> v9-kusa
 			// after the XER fix). Bump this letter whenever ARM64 SPU codegen changes semantics.
-			fmt::append(m_hash, "__spu-a-0x%05x-%s", func.entry_point, fmt::base57(output));
+			fmt::append(m_hash, "__spu-b-0x%05x-%s", func.entry_point, fmt::base57(output));
 
 #ifdef ARCH_ARM64
 			// The ARM64 retry recompiles the SAME guest function with different codegen -- it

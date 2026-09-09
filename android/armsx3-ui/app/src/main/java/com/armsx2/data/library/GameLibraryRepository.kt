@@ -762,7 +762,16 @@ class GameLibraryRepository(private val context: Context) {
     }
 
     private fun canUseRawStorage(): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            // Legacy storage permission, granted through the runtime permission
+            // flow on Android 5-10. ContextCompat knows the manifest entry.
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
 
     data class CachedLibrary(val key: String?, val games: List<GameInfo>)
 

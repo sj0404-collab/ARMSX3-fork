@@ -3,6 +3,7 @@ package com.armsx2.ui.settings
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,9 +11,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -22,6 +25,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,9 +37,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.config.Settings
 import com.armsx2.config.Dev9HostMapping
+import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
 import com.armsx2.ui.Colors
 import com.armsx2.ui.InGameOverlay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
 
 /**
@@ -158,6 +166,276 @@ fun NetworkTab(state: MutableState<Settings>) {
                 s.usbKeyboard,
                 description = str("net.usbKeyboard.description"),
         ) { apply(s.copy(usbKeyboard = it)) }
+        SettingsDivider()
+        CloudSection()
+    }
+}
+
+/**
+ * Cloud save + cloud game mirroring (see [com.armsx2.CloudSync]).
+ *
+ * Saves sync over WebDAV (or any plain HTTP host that keeps a file tree) —
+ * <remote>/saves/<titleId>.zip — and games stream from <remote>/games/. Save data is
+ * pushed on demand and, when the toggle is on, automatically when a game exits.
+ *
+ * The transport is plain HTTPS + Basic auth in the URL, so it also works on a
+ * bare static server or a sync folder; no SDK is required on the other end.
+ */
+private const val CloudGlyph = "☁"
+private const val CloudUrlKey = "cloud.tab.url"
+private const val CloudUserKey = "cloud.tab.user"
+private const val CloudPassKey = "cloud.tab.pass"
+
+@Composable
+private fun CloudSection() {
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    // The whole section is driven off CloudSync.config, which is volatile and may
+    // change underneath us; these mirrors keep the text fields sane while editing.
+    var url by remember { mutableStateOf(com.armsx2.CloudSync.config?.remoteUrl ?: "") }
+    var user by remember { mutableStateOf(com.armsx2.CloudSync.config?.username.orEmpty()) }
+    var pass by remember { mutableStateOf(com.armsx2.CloudSync.config?.password.orEmpty()) }
+
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(CloudGlyph, fontSize = 20.sp, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                str("cloud.section.title"),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Text(
+            str("cloud.section.description"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+
+        CloudEditRow(
+            controllerId = "cloud.url",
+            label = str("cloud.url.label"),
+            description = str("cloud.url.description"),
+            placeholder = "https://nextcloud.example.com/remote.php/dav/armsx3/",
+            value = url,
+            fieldLabel = str("cloud.url.fieldLabel"),
+            onChange = { url = it },
+        )
+        if (url.isNotBlank()) {
+            CloudEditRow(
+                controllerId = "cloud.user",
+                label = str("cloud.user.label"),
+                description = str("cloud.user.description"),
+                value = user,
+                fieldLabel = str("cloud.user.fieldLabel"),
+                onChange = { user = it },
+            )
+            CloudEditRow(
+                controllerId = "cloud.pass",
+                label = str("cloud.pass.label"),
+                description = str("cloud.pass.description"),
+                value = pass,
+                fieldLabel = str("cloud.pass.fieldLabel"),
+                onChange = { pass = it },
+            )
+        }
+
+        // Saving writes credentials to app-private SharedPreferences. Show that the config
+        // changed rather than hiding the secret behind a save that never happens.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val save = {
+                val updated = if (url.isBlank()) null
+                else com.armsx2.CloudSync.Config(
+                    remoteUrl = url,
+                    username = user.trim().takeIf { it.isNotBlank() },
+                    password = pass.takeIf { it.isNotBlank() },
+                )
+                com.armsx2.CloudSync.save(updated)
+                status = if (updated == null) str("cloud.status.disabled") else str("cloud.status.saved")
+            }
+            OutlinedButton(
+                onClick = save,
+                modifier = Modifier.weight(1f).controllerFocusable("cloud.save", onConfirm = save),
+            ) { Text(str("cloud.save")) }
+            if (com.armsx2.CloudSync.config != null) {
+                val clear = {
+                    com.armsx2.CloudSync.save(null)
+                    url = ""; user = ""; pass = ""
+                    status = str("cloud.status.disabled")
+                }
+                OutlinedButton(
+                    onClick = clear,
+                    modifier = Modifier.weight(1f).controllerFocusable("cloud.clear", onConfirm = clear),
+                ) { Text(str("action.reset")) }
+            }
+        }
+
+        if (com.armsx2.CloudSync.config != null) {
+            SettingsDivider()
+            ToggleRow(
+                label = str("cloud.autopush"),
+                value = com.armsx2.CloudSync.autoPush,
+                description = str("cloud.autopush.description"),
+                onChange = { com.armsx2.CloudSync.setAutoPush(it) },
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val push = {
+                    if (!busy) scope.launch {
+                        busy = true
+                        status = str("cloud.working")
+                        val n = withContext(Dispatchers.IO) { com.armsx2.CloudSync.pushAllSaves() }
+                        status = I18n.get("cloud.pushed").format(n)
+                        busy = false
+                    }
+                }
+                OutlinedButton(
+                    onClick = push,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f).controllerFocusable("cloud.push", onConfirm = push),
+                ) { Text(str("cloud.push")) }
+                val pull = {
+                    if (!busy) scope.launch {
+                        busy = true
+                        status = str("cloud.working")
+                        val n = withContext(Dispatchers.IO) { com.armsx2.CloudSync.pullAllSaves() }
+                        status = I18n.get("cloud.pulled").format(n)
+                        busy = false
+                    }
+                }
+                OutlinedButton(
+                    onClick = pull,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f).controllerFocusable("cloud.pull", onConfirm = pull),
+                ) { Text(str("cloud.pull")) }
+            }
+
+            // Cloud game streaming: download a disc under games/ and launch it.
+            CloudGameRow(busy = busy) { m ->
+                busy = m
+            }
+        }
+
+        if (status.isNotEmpty()) {
+            Text(
+                status,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (status.startsWith("✓")) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+            )
+        }
+    }
+}
+
+/** A name entry row mirroring [LocalLinkRow], but text-only and custom-labelled
+ *  (LocalLinkRow carries a Generate action and the shared rows hardcode "Address"). */
+@Composable
+private fun CloudEditRow(
+    controllerId: String,
+    label: String,
+    description: String,
+    value: String,
+    fieldLabel: String,
+    placeholder: String = "",
+    onChange: (String) -> Unit,
+) {
+    val edit = {
+        com.armsx2.ui.home.LibraryKeyboard.open(value, onChange, fieldLabel)
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowAura())
+            .clickable(onClick = edit)
+            .controllerFocusable(controllerId, onConfirm = edit)
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                value.ifEmpty { placeholder.ifEmpty { "\u2014" } },
+                color = Color(0xFFCCCCCC),
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            description,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 3.dp),
+        )
+    }
+}
+
+/** Download-and-play a single game file from the cloud ("cloud games"). */
+@Composable
+private fun CloudGameRow(busy: Boolean, setBusy: (Boolean) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var name by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("") }
+
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            str("cloud.games.title"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            str("cloud.games.description"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        CloudEditRow(
+            controllerId = "cloud.game",
+            label = str("cloud.games.file"),
+            description = str("cloud.games.file.description"),
+            value = name,
+            fieldLabel = str("cloud.games.file.fieldLabel"),
+            placeholder = "BLUS30475/BLUS30475.iso",
+            onChange = { name = it },
+        )
+        if (name.isNotBlank()) {
+            val launch = {
+                if (!busy) scope.launch {
+                    setBusy(true)
+                    status = str("cloud.download.working")
+                    val local = withContext(Dispatchers.IO) { com.armsx2.CloudSync.downloadGame(name) }
+                    setBusy(false)
+                    if (local != null) {
+                        status = str("cloud.download.done")
+                        com.armsx2.runtime.MainActivityRuntime.launchGame(local)
+                    } else {
+                        status = str("cloud.download.failed")
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = launch,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().controllerFocusable("cloud.game.launch", onConfirm = launch),
+            ) { Text(str("cloud.games.launch")) }
+            if (status.isNotEmpty()) {
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp),
+                )
+            }
+        }
     }
 }
 
