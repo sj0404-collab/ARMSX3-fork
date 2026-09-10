@@ -4,6 +4,7 @@
 #include "Emu/VFS.h"
 #include "Emu/system_utils.hpp"
 #include "Crypto/utils.h"
+#include "Utilities/HttpFile.h"
 
 #include <codecvt>
 #include <algorithm>
@@ -101,7 +102,8 @@ bool is_iso_file(const std::string& path, u64* size, bool* is_raw_device)
 	// "new_path" is updated with the raw device path in case "path" points to a BD drive
 	const bool raw_device = fs::get_optical_raw_device(path, &new_path);
 
-	if (!raw_device && !fs::is_file(path))
+	// For HTTP URLs, skip the local filesystem check — the http_file backend handles access
+	if (!raw_device && !fs::is_http_url(path) && !fs::is_file(path))
 	{
 		return false;
 	}

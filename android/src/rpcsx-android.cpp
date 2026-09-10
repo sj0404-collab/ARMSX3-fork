@@ -47,6 +47,7 @@
 #include "Input/virtual_pad_handler.h"
 #include "Loader/ISO.h"
 #include "Loader/PSF.h"
+#include "Utilities/HttpFile.h"
 #include "Loader/PUP.h"
 #include "Loader/TAR.h"
 #include "Emu/Cell/lv2/sys_sync.h"
@@ -3630,7 +3631,7 @@ extern "C" int _rpcsx_boot(std::string_view path_) {
   // black screen on an installed title. locateEbootPath handles both layouts
   // (PS3_GAME/USRDIR for a disc, USRDIR for an installed game); if it finds nothing we
   // fall through to the original behaviour rather than failing the boot outright.
-  if (fs::is_dir(path)) {
+  if (!fs::is_http_url(path) && fs::is_dir(path)) {
     if (auto eboot = locateEbootPath(path); !eboot.empty() && fs::is_file(eboot)) {
       rpcsx_android.notice("boot: resolved directory '%s' to '%s'", path, eboot);
       path = eboot;
@@ -3670,7 +3671,16 @@ extern "C" int _rpcsx_boot(std::string_view path_) {
   // Two offsets, because size alone proves nothing: a directory entry can be listed with its
   // real size and still refuse to deliver bytes. The second read is at the ISO descriptor, the
   // first place any disc is read for real.
-  if (fs::is_file(path)) {
+  //
+  // For HTTP URLs, do a HEAD request instead of local file probing.
+  if (fs::is_http_url(path)) {
+    u64 http_size = 0;
+    if (!fs::http_device::head_size(path, http_size)) {
+      rpcsx_android.error("boot: HTTP HEAD failed for '%s'", path);
+      return static_cast<int>(game_boot_result::invalid_file_or_folder);
+    }
+    rpcsx_android.notice("boot: HTTP file '%s' is %llu bytes", path, http_size);
+  } else if (fs::is_file(path)) {
     fs::file probe(path);
     char byte = 0;
 

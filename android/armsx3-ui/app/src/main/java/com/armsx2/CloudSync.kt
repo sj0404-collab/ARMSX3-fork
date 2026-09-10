@@ -434,6 +434,49 @@ object CloudSync {
             .also { conn?.disconnect() }
     }
 
+    /**
+     * Build the full HTTP URL for a cloud game without downloading it.
+     * The RPCS3 http_file backend will read the ISO via HTTP Range requests.
+     * Returns null if the server is unreachable or the URL can't be built.
+     */
+    suspend fun streamGameUrl(remoteName: String): String? = withContext(Dispatchers.IO) {
+        val safeRemote = safeComponent(remoteName)
+        if (safeRemote.isEmpty()) {
+            Log.e(TAG, "refusing game stream with unsafe name '$remoteName'")
+            return@withContext null
+        }
+        val cfg = snapshot().config ?: return@withContext null
+        val base = if (cfg.remoteUrl.endsWith("/")) cfg.remoteUrl else "${cfg.remoteUrl}/"
+        val url = "${base}games/$safeRemote"
+
+        // Verify server is reachable via HEAD before handing URL to the emulator
+        val conn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
+            Log.w(TAG, "streamGameUrl: cannot open connection: ${e.message}")
+            return@withContext null
+        }
+        try {
+            conn.requestMethod = "HEAD"
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
+            conn.setRequestProperty("User-Agent", "ARMSX3-CloudSync/1.0")
+            if (cfg.username != null) {
+                val raw = java.util.Base64.getEncoder()
+                    .encodeToString("${cfg.username}:${cfg.password.orEmpty()}".toByteArray())
+                conn.setRequestProperty("Authorization", "Basic $raw")
+            }
+            val code = runCatching { conn.responseCode }.getOrDefault(-1)
+            if (code in 200..299) {
+                Log.i(TAG, "streamGameUrl: HEAD OK ($code) for $url")
+                url
+            } else {
+                Log.w(TAG, "streamGameUrl: HEAD returned $code for $url")
+                null
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     // ---- Low level --------------------------------------------------------
 
     private suspend fun http(

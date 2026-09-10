@@ -500,11 +500,30 @@ private fun CloudGameRow(busy: Boolean, setBusy: (Boolean) -> Unit) {
                     }
                 }
             }
+            val stream = {
+                if (!busy) scope.launch {
+                    setBusy(true)
+                    status = str("cloud.games.stream.working")
+                    val url = withContext(Dispatchers.IO) { com.armsx2.CloudSync.streamGameUrl(name) }
+                    setBusy(false)
+                    if (url != null) {
+                        status = str("cloud.games.stream.done")
+                        com.armsx2.runtime.MainActivityRuntime.launchGame(url)
+                    } else {
+                        status = str("cloud.games.stream.failed")
+                    }
+                }
+            }
             OutlinedButton(
                 onClick = launch,
                 enabled = !busy,
                 modifier = Modifier.fillMaxWidth().controllerFocusable("cloud.game.launch", onConfirm = launch),
             ) { Text(str("cloud.games.launch")) }
+            OutlinedButton(
+                onClick = stream,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().controllerFocusable("cloud.game.stream", onConfirm = stream),
+            ) { Text(str("cloud.games.stream")) }
             if (status.isNotEmpty()) {
                 Text(
                     status,

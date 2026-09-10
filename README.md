@@ -21,11 +21,15 @@ Highlights
   cached game downloads. A game is fetched whole, cached locally, and can be
   re-launched without a network; the client also issues a WebDAV PROPFIND on
   `saves/` so a fresh install recovers its saves before any local folder exists.
-  Hardened against zip-slip, connection leaks and settings races; oversized
-  archives are skipped, never truncated. One-tap presets fill the address for the
-  free WebDAV tiers (pCloud, Koofr, Mail.ru Cloud, Yandex Disk, Nextcloud) —
-  you only add your account login. Google Drive / Dropbox / GoFile are API-only
-  and need developer app keys, so they are intentionally not offered.
+  **HTTP streaming**: a new `http_file` backend reads ISO files directly from a
+  remote server via HTTP Range requests with a 1 MB LRU chunk cache and
+  sequential prefetch — no download required when the server is on a fast
+  network (e.g. a cheap VPS). Hardened against zip-slip, connection leaks and
+  settings races; oversized archives are skipped, never truncated. One-tap
+  presets fill the address for the free WebDAV tiers (pCloud, Koofr, Mail.ru
+  Cloud, Yandex Disk, Nextcloud) — you only add your account login. Google
+  Drive / Dropbox / GoFile are API-only and need developer app keys, so they
+  are intentionally not offered.
 * XENO branding (this branch): new launcher icon set (square + round, all
   densities), in-app mark, notification icon, boot intro sting (1080x1080/30fps
   h264+aac, same specs `BootSplashActivity` expects) and a recoloured library

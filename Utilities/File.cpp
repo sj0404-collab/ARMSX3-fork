@@ -1,5 +1,6 @@
 #include <cerrno>
 #include "File.h"
+#include "HttpFile.h"
 #include "mutex.h"
 #include "StrFmt.h"
 
@@ -997,6 +998,13 @@ shared_ptr<fs::device_base> fs::get_virtual_device(const std::string& path)
 	if (path.starts_with("/vfsv0_") && path.size() >= 8 + 22 && path[29] == '_' && path.find_first_of('/', 1) > 29)
 	{
 		return get_device_manager().get_device(path);
+	}
+
+	// HTTP URL: delegate to the http_dev virtual device
+	if (path.starts_with("http://") || path.starts_with("https://"))
+	{
+		init_http_device();
+		return get_device_manager().get_device("http_dev");
 	}
 
 	return null_ptr;

@@ -80,6 +80,7 @@ target_sources(rpcs3_emu PRIVATE
     ../../Utilities/Config.cpp
     ../../Utilities/date_time.cpp
     ../../Utilities/File.cpp
+    ../../Utilities/HttpFile.cpp
     ../../Utilities/JITASM.cpp
     ../../Utilities/JITLLVM.cpp
     ../../Utilities/LUrlParser.cpp
