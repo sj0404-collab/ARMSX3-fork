@@ -62,8 +62,17 @@ jobs:
           SDKM="$(cygpath -m "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat")"
           echo "sdkmanager: $SDKM"
           ROOT="$(cygpath -m "$ANDROID_HOME")"
-          yes | cmd //c "$SDKM" --sdk_root="$ROOT" "ndk;29.0.14206865" "cmake;3.30.5"
-          yes | cmd //c "$SDKM" --sdk_root="$ROOT" "platforms;android-37" || true
+          # Pre-accept Android SDK licenses so sdkmanager never reads stdin
+          # (yes|… SIGPIPEs the step under Git Bash pipefail).
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf '%s\n' \
+            24333f8a63b6825ea9c5514f83c2829b004d1fee \
+            84831b9409646a918e30573bab4c9c91346d8abd \
+            d975f751698a77b662f1254ddbedb9ad94456381 > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf '%s\n' 8933bad161af4178b1185d1a37fbf41ea5269c55 \
+            > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          cmd //c "$SDKM" --sdk_root="$ROOT" "ndk;29.0.14206865" "cmake;3.30.5" < /dev/null
+          cmd //c "$SDKM" --sdk_root="$ROOT" "platforms;android-37" < /dev/null || true
           if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
             PLAT="$(curl -s https://dl.google.com/android/repository/repository2-4.xml | grep -oE 'platform-37_r[0-9]+\.zip' | head -1)"
             test -n "$PLAT"
