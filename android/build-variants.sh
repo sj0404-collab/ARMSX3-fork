@@ -123,6 +123,19 @@ build_variant() {
 
 	echo "==> $name: NDK $ndk, API $api, -march=$march"
 
+	# [Windows] The LLVM NATIVE host tools (llvm-min-tblgen.exe) die with
+	# 0xC0000139 (ENTRYPOINT_NOT_FOUND) on hosted runners because the NDK
+	# toolchain file leaks into the NATIVE ExternalProject, producing ARM64
+	# PE binaries on an x64 host. Fix: tell the native sub-build to use the
+	# host compiler (MinGW gcc, always in PATH on GitHub Windows runners).
+	local native_flags=()
+	if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+		native_flags=(
+			'-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=gcc;-DCMAKE_C_COMPILER_TARGET=x86_64-w64-mingw32;-DCMAKE_CXX_COMPILER=g++;-DCMAKE_CXX_COMPILER_TARGET=x86_64-w64-mingw32'
+		)
+		echo "==> $name: Windows host — NATIVE LLVM tools will use MinGW gcc"
+	fi
+
 	# Does build.ninja already describe exactly the toolchain we want?
 	#
 	# The NDK bakes the target triple at first configure, so a warm build directory silently keeps
@@ -150,34 +163,12 @@ build_variant() {
 	else
 		# configure.sh forwards "$@" straight to cmake, so the march override rides along there.
 		NDK_VERSION="$ndk" ANDROID_API="$api" BUILD_DIR="$build_dir" \
-			bash "$ROOT/android/configure.sh" "-DARMSX3_ARM_MARCH=$march"
+			bash "$ROOT/android/configure.sh" "-DARMSX3_ARM_MARCH=$march" "${native_flags[@]}"
 
 		if ! configured_ok; then
 			echo "$name: configure did not produce API $api / -march=$march -- stale build dir?" \
 				"remove $build_dir" >&2
 			return 1
-		fi
-	fi
-
-	# [Windows] The LLVM NATIVE host tools (llvm-min-tblgen.exe) die with
-	# 0xC0000139 (ENTRYPOINT_NOT_FOUND) on hosted runners. Probe the binary
-	# before the long ninja run so the reason lands in the log: target machine,
-	# imported DLLs, and a direct run.
-	if [[ "${RUNNER_OS:-}" == "Windows" && -d "$build_dir/3rdparty/llvm/llvm_build/NATIVE" ]]; then
-		echo "==> LLVM_PROBE: probing NATIVE host tools (Windows)"
-		PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir/3rdparty/llvm/llvm_build/NATIVE" llvm-min-tblgen -k 0 || true
-		local probe="$build_dir/3rdparty/llvm/llvm_build/NATIVE/bin/llvm-min-tblgen.exe"
-		if [[ -f "$probe" ]]; then
-			"$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/llvm-readobj$NDK_EXE" \
-				--file-headers "$probe" 2>&1 | grep -iE "File:|Format:|Machine:" || true
-			"$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/llvm-objdump$NDK_EXE" \
-				--private-headers "$probe" 2>/dev/null | grep -iE "DLL Name:" | head -20 || true
-			local probe_exit
-			( cd "$(dirname "$probe")" && ./llvm-min-tblgen.exe --version ) >/dev/null 2>&1
-			probe_exit=$?
-			echo "==> LLVM_PROBE: exit code $probe_exit"
-		else
-			echo "==> LLVM_PROBE: NATIVE/bin/llvm-min-tblgen.exe NOT FOUND in $build_dir/3rdparty/llvm/llvm_build/NATIVE"
 		fi
 	fi
 
