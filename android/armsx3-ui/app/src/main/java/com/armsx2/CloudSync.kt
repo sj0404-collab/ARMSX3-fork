@@ -1,14 +1,19 @@
 package com.armsx2
 
+import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.rpcsx.RPCSX
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.LinkedHashSet
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -24,6 +29,11 @@ import java.util.zip.ZipOutputStream
  * Layout on the server:
  *   <remote>/saves/<titleId>/<saveFolderName>.zip   — one per save folder
  *   <remote>/games/                                  — game ISOs/PKGs mirrored from the network
+ *
+ * A WebDAV PROPFIND on <remote>/saves/ lists what the server holds, so a fresh
+ * install can pull its saves even before any local folder exists. Servers that
+ * answer no PROPFIND (a bare static folder) degrade to matching the local save
+ * list, which is what the client used to do everywhere.
  *
  * The download/upload path is chosen so that saves are batched in one zip per
  * title (keeps manifest bookkeeping trivial) and games are streamed as raw
@@ -263,32 +273,113 @@ object CloudSync {
         return pushed
     }
 
-    /** Pull every remote save the server has under saves/. */
+    /** Pull the remote save archive for every locally known title, plus every
+     *  title the server lists under saves/ (WebDAV PROPFIND).
+     *
+     *  The PROPFIND pass is what lets a fresh install recover its saves: the
+     *  local-only iteration that preceded it consulted only folders that already
+     *  existed on the device, so an empty install pulled nothing. Servers with
+     *  no PROPFIND (a bare static HTTP folder) return an empty listing and we
+     *  degrade to the local-only behaviour unchanged. */
     suspend fun pullAllSaves(): Int {
         val root = SaveDataImporter.savedataRoot() ?: return 0
-        // We can't PROPFIND generically without an XML client; iterate the
-        // local save list and pull matches.  A fuller listing is a future
-        // nicety; matching on what exists locally is the common case.
-        var pulled = 0
-        root.listFiles().orEmpty()
+        val local = root.listFiles().orEmpty()
             .filter { it.isDirectory && !it.name.startsWith(".") }
-            .forEach { dir ->
-                if (downloadSaves(dir.name)) pulled++
-            }
+            .map { it.name }
+        val remote = listRemoteSaves()
+
+        val targets = LinkedHashSet<String>()
+        targets.addAll(local)
+        targets.addAll(remote)
+
+        var pulled = 0
+        targets.forEach { if (downloadSaves(it)) pulled++ }
         return pulled
+    }
+
+    /**
+     * Directory listing of <remote>/saves/ via WebDAV PROPFIND (Depth: 1).
+     * Returns the archive file names (.zip). Empty when the server does not
+     * answer PROPFIND — that keeps plain-HTTP static folders working.
+     */
+    private suspend fun listRemoteSaves(): List<String> = withContext(Dispatchers.IO) {
+        // Pinned inside open(); a settings edit mid-flight must not swap the
+        // server underneath the request.
+        var conn: HttpURLConnection? = null
+        try {
+            conn = open("saves/", "PROPFIND")
+            conn!!.setRequestProperty("Depth", "1")
+            conn!!.setRequestProperty("Content-Type", "application/xml; charset=utf-8")
+            conn!!.doOutput = true
+            val body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+                "<D:propfind xmlns:D=\"DAV:\"><D:prop><D:displayname/></D:prop></D:propfind>"
+            conn!!.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            if (conn!!.responseCode != 207) return@withContext emptyList()
+
+            val xml = conn!!.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            propfindHrefs(xml).mapNotNull { href ->
+                // href may be a full URL or a root-relative path depending on the
+                // server; the archive name is always the tail segment. Decode
+                // %XX escapes so a titleId with spaces/Unicode matches disk.
+                val segment = Uri.decode(href.trim().trimEnd('/').substringAfterLast('/'))
+                segment.takeIf { it.endsWith(".zip", ignoreCase = true) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "PROPFIND saves/ failed: ${e.message}")
+            emptyList()
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /** Extract every <D:response><D:href> text from a 207 Multi-Status body.
+     *  Tolerates both prefixed (D:href) and bare (href) tags. */
+    private fun propfindHrefs(xml: String): List<String> {
+        val out = ArrayList<String>()
+        try {
+            val parser = XmlPullParserFactory.newInstance().newPullParser()
+            parser.setInput(StringReader(xml))
+            val buffer = StringBuilder()
+            var inHref = false
+            while (parser.eventType != XmlPullParser.END_DOCUMENT) {
+                val tag = parser.run {
+                    if (eventType == XmlPullParser.START_TAG || eventType == XmlPullParser.END_TAG) {
+                        name.substringAfter(':')
+                    } else null
+                }
+                when (parser.eventType) {
+                    XmlPullParser.START_TAG ->
+                        if (tag == "href") { inHref = true; buffer.setLength(0) }
+                    XmlPullParser.TEXT ->
+                        if (inHref) buffer.append(parser.text)
+                    XmlPullParser.END_TAG ->
+                        if (tag == "href") {
+                            inHref = false
+                            val href = buffer.toString().trim()
+                            if (href.isNotEmpty()) out.add(href)
+                        }
+                }
+                parser.next()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "PROPFIND href parse failed: ${e.message}")
+        }
+        return out
     }
 
     // ---- Game files -------------------------------------------------------
 
     /**
-     * Stream a game file from <remote>/games/<name> to a local cache under the
-     * data root, then return the local path for [net.rpcsx.RPCSX.boot].
+     * Fetch a game file from <remote>/games/<name> into the local cache under
+     * the data root, then return the local path for [net.rpcsx.RPCSX.boot].
      *
      * The file is streamed block-by-block (no full-buffer), so a multi-GB ISO
-     * is downloaded without exhausting heap.  Existing local files are
-     * returned immediately when their size matches the remote's
-     * Content-Length — a cheap "resume" that avoids re-pulling giant discs on
-     * every launch.
+     * is downloaded without exhausting heap. Existing local files are reused
+     * when their size matches the remote's Content-Length — a cheap "resume"
+     * that avoids re-pulling giant discs on every launch. When the remote is
+     * unreachable (offline, or a chunked host with no HEAD) and a non-empty
+     * local copy exists, that copy is launched as-is instead of failing: that
+     * is the "downloaded from the cloud, now play it without a network" case.
      */
     suspend fun downloadGame(remoteName: String): String? = withContext(Dispatchers.IO) {
         // remoteName is attacker-visible (URL path) AND lands on the local disk
@@ -303,9 +394,15 @@ object CloudSync {
         local.parentFile?.mkdirs()
 
         val remoteSize = headSize("games/$safeRemote")
-        if (local.exists() && remoteSize != null && local.length() == remoteSize) {
-            Log.i(TAG, "cached $safeRemote (${local.length()} B)")
-            return@withContext local.absolutePath
+        if (local.exists()) {
+            if (remoteSize == null && local.length() > 0) {
+                Log.i(TAG, "offline fallback: launching cached $safeRemote (${local.length()} B)")
+                return@withContext local.absolutePath
+            }
+            if (remoteSize != null && local.length() == remoteSize) {
+                Log.i(TAG, "cached $safeRemote (${local.length()} B)")
+                return@withContext local.absolutePath
+            }
         }
 
         // The server may not answer content-length (chunked). Stream anyway.
@@ -315,7 +412,14 @@ object CloudSync {
             }
         } in 200..204
 
-        if (ok) local.absolutePath else null
+        if (ok) {
+            local.absolutePath
+        } else {
+            // Drop the partial transfer so a later offline fallback can never
+            // be handed a truncated disc and told it is complete.
+            runCatching { local.delete() }
+            null
+        }
     }
 
     /** HEAD request for a remote file size. Null when absent or unknown. */

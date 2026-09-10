@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Build the release variants of ARMSX3.
+# Build the release variant(s) of ARMSX3.
 #
-# ARMSX3 ships four APKs. The split is by platform level and ISA baseline -- the core is
+# ARMSX3 can ship up to four APKs. The split is by platform level and ISA baseline -- the core is
 # arm64-only in all four:
 #
 #   legacy  API 30 (Android 11), armv8.1-a               the fallback, and the FLOOR the code
@@ -50,10 +50,9 @@
 # in sequence.
 #
 # Usage:
-#   android/build-variants.sh                 # all three
-#   android/build-variants.sh a13             # one
+#   android/build-variants.sh                 # a13 (release default)
 #   android/build-variants.sh a13 a15         # some
-#   VARIANTS="generic" android/build-variants.sh
+#   VARIANTS="legacy a11 a13 a15" android/build-variants.sh   # all four
 #
 set -euo pipefail
 
@@ -101,7 +100,11 @@ VARIANT_a11="29.0.14206865:30:armv8.2-a+dotprod+fp16:a11-armv8.2-sdk30"
 VARIANT_a13="29.0.14206865:33:armv8.2-a+dotprod+fp16:a13-armv8.2-sdk33"
 VARIANT_a15="29.0.14206865:35:armv8.2-a+dotprod+fp16:a15-armv8.2-sdk35"
 
-VARIANTS="${VARIANTS:-${*:-legacy a11 a13 a15}}"
+# Release builds ship a13 only (armv8.2-a + dotprod + fp16, API 33): it is the
+# standard for 8 Gen 1 and newer, covers current devices, and cuts a cold
+# full-LLVM build from ~6 hours to ~45 minutes. legacy/a11/a15 stay available
+# for device-level rollouts with VARIANTS="legacy a11 a13 a15".
+VARIANTS="${VARIANTS:-${*:-a13}}"
 
 version_name() {
 	sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' "$UI/app/build.gradle.kts" | head -1
@@ -148,7 +151,11 @@ local native_flags=()
 	configured_ok() {
 		[ -f "$build_dir/build.ninja" ] &&
 			grep -q "aarch64-none-linux-android$api" "$build_dir/build.ninja" &&
-			grep -q -- "-march=$march" "$build_dir/build.ninja"
+			grep -q -- "-march=$march" "$build_dir/build.ninja" &&
+			# SIZE_OPT=1 adds --gc-sections at every link; a warm dir from before
+			# that flag exists is NOT a match and must be reconfigured, or it
+			# would stay as heavy as it was.
+			{ [[ "${SIZE_OPT:-1}" == "0" ]] || grep -q -- "--gc-sections" "$build_dir/build.ninja"; }
 	}
 
 	# Skip configure when the build directory already matches.

@@ -23,12 +23,30 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${CMAKE_VERSION:=3.30.5}"
 : "${ANDROID_API:=33}"          # keep in step with armsx3-ui minSdk
 : "${BUILD_DIR:=$ROOT/build-android}"
+# Size-reduction pass. 1 (default): compile every TU with function/data sections
+# and let the final link --gc-sections drop dead code -- RPCS3 links the whole
+# static LLVM in, and gc-sections is what stops that from shipping every symbol.
+# Cost: no runtime speed change (sections + gc are link-time only), marginally
+# longer links. 0 disables it for the upstream-flat behaviour.
+: "${SIZE_OPT:=1}"
 
 NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
 CM="$ANDROID_HOME/cmake/$CMAKE_VERSION/bin"
 
 [ -d "$NDK" ] || { echo "NDK not found: $NDK" >&2; exit 1; }
 [ -x "$CM/cmake" ] || { echo "cmake not found: $CM/cmake" >&2; exit 1; }
+
+# Size flags are appended before "$@" so an explicit override still wins.
+size_flags=()
+if [[ "$SIZE_OPT" != "0" ]]; then
+	size_flags=(
+		-DCMAKE_C_FLAGS="-ffunction-sections -fdata-sections"
+		-DCMAKE_CXX_FLAGS="-ffunction-sections -fdata-sections"
+		-DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections"
+		-DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections"
+		-DCMAKE_MODULE_LINKER_FLAGS="-Wl,--gc-sections"
+	)
+fi
 
 exec "$CM/cmake" -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
@@ -58,4 +76,5 @@ exec "$CM/cmake" -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   `# LTO off for bring-up: large link RAM/disk cost, no benefit while iterating` \
   -DUSE_LTO=OFF \
   -DASMJIT_NO_SHM_OPEN=ON \
+  "${size_flags[@]}" \
   "$@"

@@ -198,9 +198,17 @@ android {
     }
 
     packaging {
-        // libadrenotools' linker-namespace bypass needs the .so files laid out
-        // uncompressed rather than extracted by the installer.
-        jniLibs.useLegacyPackaging = true
+        // Compress libarmsx3-core.so inside the APK (~40% smaller APK).
+        //
+        // libadrenotools is statically linked into the JNI glue, so it is not
+        // affected by this flag; the one on-device behaviour that can change is
+        // the custom-Vulkan-driver path (adrenotools_open_libvulkan). If a
+        // driver pack ever stops loading on a device, flip
+        // `-Parmsx3.extractNativeLibs=true` and ship the extracted layout
+        // again -- correctness always wins over bytes.
+        val extractNativeLibs =
+            (project.findProperty("armsx3.extractNativeLibs") as String?) == "true"
+        jniLibs.useLegacyPackaging = extractNativeLibs
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }

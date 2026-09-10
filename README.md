@@ -18,12 +18,14 @@ Highlights
   honestly: any rejected setting is counted and surfaced in the UI instead of
   being silently swallowed.
 * Cloud save + game sync over WebDAV (`CloudSync`): per-title save archives plus
-  streamed game downloads. Hardened against zip-slip, connection leaks and
-  settings races; oversized archives are skipped, never truncated. No server of
-  your own? One-tap presets fill the address for the free WebDAV tiers (pCloud,
-  Koofr, Mail.ru Cloud, Yandex Disk, Nextcloud) — you only add your account
-  login. Google Drive / Dropbox / GoFile are API-only and need developer app
-  keys, so they are intentionally not offered.
+  cached game downloads. A game is fetched whole, cached locally, and can be
+  re-launched without a network; the client also issues a WebDAV PROPFIND on
+  `saves/` so a fresh install recovers its saves before any local folder exists.
+  Hardened against zip-slip, connection leaks and settings races; oversized
+  archives are skipped, never truncated. One-tap presets fill the address for the
+  free WebDAV tiers (pCloud, Koofr, Mail.ru Cloud, Yandex Disk, Nextcloud) —
+  you only add your account login. Google Drive / Dropbox / GoFile are API-only
+  and need developer app keys, so they are intentionally not offered.
 * XENO branding (this branch): new launcher icon set (square + round, all
   densities), in-app mark, notification icon, boot intro sting (1080x1080/30fps
   h264+aac, same specs `BootSplashActivity` expects) and a recoloured library
@@ -44,14 +46,22 @@ submodules:
     git clone https://github.com/bylaws/libadrenotools android/armsx3-ui/app/src/main/cpp/libadrenotools
 
 Build the core. This is the long part and produces an unstripped library of
-around 1.3 GB:
+around 1.3 GB. The repository's own wrapper is the supported path — it pins NDK
+29 / cmake 3.30.5, turns off desktop-only features and defaults to a size pass
+(`SIZE_OPT=1`: function/data sections + `--gc-sections` at link, which drops
+dead code from the static LLVM link):
 
     export ANDROID_HOME=$HOME/Library/Android/sdk
-    cmake -B build-android -G Ninja \
-      -DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/<version>/build/cmake/android.toolchain.cmake \
-      -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 \
-      -DCMAKE_BUILD_TYPE=RelWithDebInfo
-    cmake --build build-android --target rpcsx-android -j8
+    android/configure.sh -DARMSX3_ARM_MARCH=armv8.2-a+dotprod+fp16
+    cmake --build $PWD/build-android --target android/libarmsx3-core.so -j8
+
+The release pipeline builds the single a13 variant (armv8.2-a + dotprod + fp16,
+API 33) end to end and produces the APK:
+
+    OUT_DIR=$PWD/release android/build-variants.sh a13
+
+(Set `VARIANTS="legacy a11 a13 a15"` for the full device floor; it runs for
+hours. `SIZE_OPT=0` restores the upstream-flat compile flags.)
 
 Strip it and put it where the app expects it:
 
@@ -63,12 +73,17 @@ Then build the app:
 
     cd android/armsx3-ui
     export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-    ./gradlew :app:assembleRelease
+    ./gradlew :app:assembleGithubRelease "-Parmsx3.minSdk=33"
 
-The apk lands in app/build/outputs/apk/release/.
+The apk lands in app/build/outputs/apk/github/release/.
 
 Note that the core library has to be rebuilt and copied again whenever anything
 under rpcs3/ or android/src/ changes. Gradle does not build it for you.
+
+APK size: native libraries are stored compressed inside the APK by default
+(~40% smaller). This only affects the custom-Vulkan-driver path; if an
+adrenotools driver pack ever stops loading on a device, rebuild with
+`-Parmsx3.extractNativeLibs=true` to restore the extracted layout.
 
 The Discord Social SDK is proprietary and is not redistributed here. Get it from
 Discord's developer portal and drop it in app/libs/ and
