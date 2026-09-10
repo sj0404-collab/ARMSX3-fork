@@ -21,7 +21,9 @@ Highlights
   streamed game downloads. Hardened against zip-slip, connection leaks and
   settings races; oversized archives are skipped, never truncated. No server of
   your own? One-tap presets fill the address for the free WebDAV tiers (pCloud,
-  Koofr, Nextcloud) — you only add your account login.
+  Koofr, Mail.ru Cloud, Yandex Disk, Nextcloud) — you only add your account
+  login. Google Drive / Dropbox / GoFile are API-only and need developer app
+  keys, so they are intentionally not offered.
 * XENO branding (this branch): new launcher icon set (square + round, all
   densities), in-app mark, notification icon, boot intro sting (1080x1080/30fps
   h264+aac, same specs `BootSplashActivity` expects) and a recoloured library

@@ -205,6 +205,16 @@ private val CLOUD_PROVIDERS = listOf(
         hintKey = "cloud.provider.koofr.hint",
     ),
     CloudProviderPreset(
+        url = "https://webdav.cloud.mail.ru/",
+        labelKey = "cloud.provider.mailru",
+        hintKey = "cloud.provider.mailru.hint",
+    ),
+    CloudProviderPreset(
+        url = "https://webdav.yandex.ru/",
+        labelKey = "cloud.provider.yandex",
+        hintKey = "cloud.provider.yandex.hint",
+    ),
+    CloudProviderPreset(
         url = "https://your-nextcloud.example/remote.php/dav/files/username/",
         labelKey = "cloud.provider.nextcloud",
         hintKey = "cloud.provider.nextcloud.hint",
