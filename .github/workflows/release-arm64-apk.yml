@@ -49,23 +49,28 @@ jobs:
       - name: Install SDK packages
         shell: bash
         run: |
-          # GitHub-hosted Windows images keep the SDK but not always
-          # cmdline-tools; install it explicitly then use sdkmanager.bat.
-          CT_ZIP="https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
+          # GitHub-hosted Windows images keep the SDK but not always the
+          # cmdline-tools; install a recent build that sees the XML v4 repo
+          # (android-37 is not listed by older managers).
+          CT_ZIP="https://dl.google.com/android/repository/commandlinetools-win-13114758_latest.zip"
           mkdir -p "$ANDROID_HOME/cmdline-tools/_ct"
           curl -sSL -o /tmp/cmdline-tools.zip "$CT_ZIP"
           unzip -q -o /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools/_ct"
           mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
           cp -R "$ANDROID_HOME/cmdline-tools/_ct/cmdline-tools/." "$ANDROID_HOME/cmdline-tools/latest/"
           rm -rf "$ANDROID_HOME/cmdline-tools/_ct" /tmp/cmdline-tools.zip
-          TOOLS_ROOT="$(cygpath -m "$ANDROID_HOME/cmdline-tools/latest")"
-          SDKM="$TOOLS_ROOT/bin/sdkmanager.bat"
+          SDKM="$(cygpath -m "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat")"
           echo "sdkmanager: $SDKM"
-          export JAVA_HOME="$JAVA_HOME_17_X64"
-          yes | cmd //c "$SDKM" --sdk_root="$(cygpath -m "$ANDROID_HOME")" \
-            "ndk;29.0.14206865" \
-            "cmake;3.30.5" \
-            "platforms;android-37"
+          ROOT="$(cygpath -m "$ANDROID_HOME")"
+          yes | cmd //c "$SDKM" --sdk_root="$ROOT" "ndk;29.0.14206865" "cmake;3.30.5"
+          yes | cmd //c "$SDKM" --sdk_root="$ROOT" "platforms;android-37" || true
+          if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+            PLAT="$(curl -s https://dl.google.com/android/repository/repository2-4.xml | grep -oE 'platform-37_r[0-9]+\.zip' | head -1)"
+            test -n "$PLAT"
+            curl -sSL -o /tmp/plat.zip "https://dl.google.com/android/repository/$PLAT"
+            unzip -q -o /tmp/plat.zip -d "$ANDROID_HOME/platforms/"
+          fi
+          ls "$ANDROID_HOME/platforms/" | tail -3
 
       - name: Build ARM64 APK
         shell: bash
