@@ -163,8 +163,8 @@ build_variant() {
 	# 0xC0000139 (ENTRYPOINT_NOT_FOUND) on hosted runners. Probe the binary
 	# before the long ninja run so the reason lands in the log: target machine,
 	# imported DLLs, and a direct run.
-	if [[ -n "${WINDIR:-}" && -d "$build_dir/3rdparty/llvm/llvm_build/NATIVE" ]]; then
-		echo "==> $name: probing LLVM NATIVE host tools (Windows)"
+	if [[ "${RUNNER_OS:-}" == "Windows" && -d "$build_dir/3rdparty/llvm/llvm_build/NATIVE" ]]; then
+		echo "==> LLVM_PROBE: probing NATIVE host tools (Windows)"
 		PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir/3rdparty/llvm/llvm_build/NATIVE" llvm-min-tblgen -k 0 || true
 		local probe="$build_dir/3rdparty/llvm/llvm_build/NATIVE/bin/llvm-min-tblgen.exe"
 		if [[ -f "$probe" ]]; then
@@ -175,7 +175,9 @@ build_variant() {
 			local probe_exit
 			( cd "$(dirname "$probe")" && ./llvm-min-tblgen.exe --version ) >/dev/null 2>&1
 			probe_exit=$?
-			echo "==> probe exit code: $probe_exit"
+			echo "==> LLVM_PROBE: exit code $probe_exit"
+		else
+			echo "==> LLVM_PROBE: NATIVE/bin/llvm-min-tblgen.exe NOT FOUND in $build_dir/3rdparty/llvm/llvm_build/NATIVE"
 		fi
 	fi
 
