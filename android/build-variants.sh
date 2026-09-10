@@ -72,6 +72,23 @@ JNI_LIBS="$UI/app/src/main/jniLibs/arm64-v8a"
 # dlopen's it by name and reports the feature unavailable when it is absent.
 JNI_LIBS_GITHUB="$UI/app/src/github/jniLibs/arm64-v8a"
 
+# NDK ships a prebuilt per host. The ARMSX3 authors build on macOS, so the
+# original scripts hard-code darwin-x86_64; keep that as the macOS value and
+# resolve other hosts explicitly so the same script works on CI runners.
+case "$(uname -s)-$(uname -m)" in
+	Darwin-*) NDK_PREBUILT=darwin-x86_64 ;;
+	Linux-x86_64) NDK_PREBUILT=linux-x86_64 ;;
+	Linux-aarch64 | Linux-arm64) NDK_PREBUILT=linux-aarch64 ;;
+	MINGW* | MSYS* | CYGWIN* | Windows_NT*) NDK_PREBUILT=windows-x86_64 ;;
+	*) NDK_PREBUILT=darwin-x86_64 ;;
+esac
+
+# On Windows the NDK tools carry a .exe suffix; the macOS and Linux builds do not.
+case "$NDK_PREBUILT" in
+	windows-*) NDK_EXE=.exe ;;
+	*) NDK_EXE= ;;
+esac
+
 # variant : ndk : api : march : apk name suffix
 #
 # The suffix is spelled out rather than derived so the filename states the whole contract --
@@ -151,7 +168,7 @@ build_variant() {
 	# for it: name it here or ship an APK with frame generation silently missing.
 	PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir" android/libarmsx3-core.so armsx3_lsfg
 
-	local strip="$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-strip"
+	local strip="$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/llvm-strip$NDK_EXE"
 
 	"$strip" --strip-unneeded -o "$JNI_LIBS/libarmsx3-core.so" \
 		"$build_dir/android/libarmsx3-core.so"
@@ -166,7 +183,7 @@ build_variant() {
 		# Only the shim's own entry points may be dynamic: a single leaked vk* symbol means the
 		# dynamic linker can bind the renderer's Vulkan calls to framegen's copies.
 		local leaked
-		leaked=$("$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-nm" \
+		leaked=$("$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/llvm-nm$NDK_EXE" \
 			-D --defined-only "$JNI_LIBS_GITHUB/libarmsx3_lsfg.so" 2>/dev/null | grep -cE "vk[A-Z]|LSFG" || true)
 
 		if [[ "$leaked" != "0" ]]; then
@@ -181,7 +198,11 @@ build_variant() {
 
 	# assembleGithubRelease, not assembleRelease: the flavor split means there is no
 	# flavorless release variant any more. The play bundle is built by build-play-aab.sh.
-	( cd "$UI" && ./gradlew --quiet :app:assembleGithubRelease "-Parmsx3.minSdk=$api" )
+	if [ -f "$UI/gradlew.bat" ] && [[ "$NDK_PREBUILT" == windows-* ]]; then
+		( cd "$UI" && cmd //c "gradlew.bat --quiet :app:assembleGithubRelease -Parmsx3.minSdk=$api" )
+	else
+		( cd "$UI" && sh ./gradlew --quiet :app:assembleGithubRelease "-Parmsx3.minSdk=$api" )
+	fi
 
 	local out="$OUT_DIR/ARMSX3-$(version_name)-$suffix.apk"
 	cp "$UI/app/build/outputs/apk/github/release/app-github-release.apk" "$out"

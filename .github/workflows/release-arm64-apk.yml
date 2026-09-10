@@ -1,0 +1,92 @@
+name: Release ARM64 APK
+
+on:
+  push:
+    tags:
+      - "0.*"
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: APK ISA/API variant (legacy, a11, a13, a15)
+        default: "a13"
+
+concurrency:
+  group: release-arm64-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ARM64 APK on Windows
+    runs-on: windows-2025
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # librashader and libadrenotools are not submodules upstream; they are
+      # fetched by hand per the repository README.
+      - name: Fetch librashader
+        run: git clone --depth 1 https://github.com/SnowflakePowered/librashader 3rdparty/librashader
+
+      - name: Fetch libadrenotools
+        run: git clone --depth 1 https://github.com/bylaws/libadrenotools android/armsx3-ui/app/src/main/cpp/libadrenotools
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        shell: bash
+        run: |
+          sdkmanager "ndk;29.0.14206865" \
+            "cmake;3.30.5" \
+            "platforms;android-37" \
+            "platform-tools"
+
+      - name: Build ARM64 APK
+        shell: bash
+        env:
+          ANDROID_HOME: "${{ env.ANDROID_HOME }}"
+          JAVA_HOME: "${{ env.JAVA_HOME }}"
+          VARIANTS: "${{ github.event.inputs.variant || 'a13' }}"
+        run: |
+          OUT_DIR="/tmp/xeno-apk" android/build-variants.sh
+          echo "APK_NAME=$(ls /tmp/xeno-apk/*.apk | sed 's#.*/##' | head -1)" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xeno-arm64-apk
+          path: /tmp/xeno-apk/*.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "XENO ${{ github.ref_name }}"
+          body: |
+            ### ARMS3 APK (arm64-v8a)
+
+            | Поле | Значение |
+            |---|---|
+            | Вариант | `a13` — armv8.2-a + dotprod + fp16, API 33 |
+            | Сборка | [run ${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+            | APK | `${{ env.APK_NAME }}` |
+
+            Установка требует PS3-прошивку (не включена).
+          files: /tmp/xeno-apk/*.apk
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
