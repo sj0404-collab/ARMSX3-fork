@@ -166,7 +166,12 @@ build_variant() {
 	# volkLoadDevice() repoint the whole renderer at framegen's device. The consequence for the
 	# build is that it is NOT a dependency of libarmsx3-core.so and will not be built by asking
 	# for it: name it here or ship an APK with frame generation silently missing.
-	PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir" android/libarmsx3-core.so armsx3_lsfg
+	if [[ -d "$ROOT/3rdparty/lsfg/lsfg-vk-android/framegen" ]]; then
+		PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir" android/libarmsx3-core.so armsx3_lsfg
+	else
+		echo "==> $name: lsfg-vk-android not present, building without frame generation"
+		PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir" android/libarmsx3-core.so
+	fi
 
 	local strip="$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/llvm-strip$NDK_EXE"
 
