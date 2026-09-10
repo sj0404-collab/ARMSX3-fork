@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,6 +45,8 @@ import com.armsx2.ui.InGameOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.rpcsx.ProgressRepository
+import net.rpcsx.RPCSX
 import java.net.NetworkInterface
 
 /**
@@ -514,6 +517,32 @@ private fun CloudGameRow(busy: Boolean, setBusy: (Boolean) -> Unit) {
                     }
                 }
             }
+            val install = {
+                if (!busy) scope.launch {
+                    setBusy(true)
+                    status = str("cloud.games.install.working")
+                    val url = withContext(Dispatchers.IO) { com.armsx2.CloudSync.streamGameUrl(name) }
+                    if (url != null) {
+                        val context = LocalContext.current
+                        val id = ProgressRepository.create(context, str("cloud.games.install.working"))
+                        val ok = withContext(Dispatchers.IO) { RPCSX.instance.installPkgFromUrl(url, id) }
+                        setBusy(false)
+                        if (ok) {
+                            // Force the library to re-read storage; the folder set
+                            // is unchanged so nothing else would prompt a rescan.
+                            withContext(Dispatchers.IO) {
+                                com.armsx2.data.library.GameLibraryRepository(context).invalidateCache()
+                            }
+                            status = str("cloud.games.install.done")
+                        } else {
+                            status = str("cloud.games.install.failed")
+                        }
+                    } else {
+                        setBusy(false)
+                        status = str("cloud.games.install.failed")
+                    }
+                }
+            }
             OutlinedButton(
                 onClick = launch,
                 enabled = !busy,
@@ -524,6 +553,11 @@ private fun CloudGameRow(busy: Boolean, setBusy: (Boolean) -> Unit) {
                 enabled = !busy,
                 modifier = Modifier.fillMaxWidth().controllerFocusable("cloud.game.stream", onConfirm = stream),
             ) { Text(str("cloud.games.stream")) }
+            OutlinedButton(
+                onClick = install,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().controllerFocusable("cloud.game.install", onConfirm = install),
+            ) { Text(str("cloud.games.install")) }
             if (status.isNotEmpty()) {
                 Text(
                     status,

@@ -5339,6 +5339,30 @@ extern "C" bool _rpcsx_install(JNIEnv *env, int fd, long progressId) {
   return true;
 }
 
+// Lazy PKG install straight from an HTTP(S) URL. The package is opened through
+// the http_file backend, so extraction reads arrive as HTTP Range requests and
+// the package is installed piece by piece as bytes land on the network -- no
+// full download, no local copy of the PKG. Requires a server that honours Range
+// (nginx/apache/lighttpd). Files are written directly into dev_hdd0/game.
+extern "C" bool _rpcsx_installPkgFromUrl(JNIEnv *env, jstring url,
+                                         jlong progressId) {
+  const std::string urlStr = unwrap(env, url);
+
+  // get_virtual_device() routes http:// and https:// into the http_dev device,
+  // which performs a HEAD probe and returns an http_file backed by Range reads.
+  fs::file file(urlStr);
+  if (!file) {
+    Progress(env, progressId)
+        .failure("Failed to open package URL: server unreachable or rejects "
+                 "Range requests");
+    return false;
+  }
+
+  std::vector<fs::file> files;
+  files.push_back(std::move(file));
+  return installPkg(env, std::move(files), progressId);
+}
+
 extern "C" bool _rpcsx_installKey(JNIEnv *env, int fd, long progressId,
                                   std::string_view gamePath) {
   auto file = fs::file::from_native_handle(fd);

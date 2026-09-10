@@ -22,10 +22,14 @@ Highlights
   re-launched without a network; the client also issues a WebDAV PROPFIND on
   `saves/` so a fresh install recovers its saves before any local folder exists.
   **HTTP streaming**: a new `http_file` backend reads ISO files directly from a
-  remote server via HTTP Range requests with a 1 MB LRU chunk cache and
-  sequential prefetch — no download required when the server is on a fast
-  network (e.g. a cheap VPS). Hardened against zip-slip, connection leaks and
-  settings races; oversized archives are skipped, never truncated. One-tap
+  remote server via HTTP Range requests (libcurl: HTTPS with the Android CA
+  store, HTTP Basic auth from credentials embedded in the game URL, redirects,
+  connection reuse) with a 1 MB LRU chunk cache and sequential prefetch — no
+  download required when the server is on a fast network (e.g. a cheap VPS). A
+  **streaming PKG install** button uses the same backend to install `.pkg`
+  packages straight from the server into `dev_hdd0/game` in one pass, so the
+  package is never stored locally. Hardened against zip-slip, connection leaks
+  and settings races; oversized archives are skipped, never truncated. One-tap
   presets fill the address for the free WebDAV tiers (pCloud, Koofr, Mail.ru
   Cloud, Yandex Disk, Nextcloud) — you only add your account login. Google
   Drive / Dropbox / GoFile are API-only and need developer app keys, so they

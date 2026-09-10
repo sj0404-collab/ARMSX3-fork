@@ -10,10 +10,14 @@
 #include <atomic>
 #include <functional>
 
+// Forward declarations (CURL is a C type; no need to pull <curl/curl.h> into every TU)
+typedef void CURL;
+struct curl_slist;
+
 namespace fs
 {
-    // HTTP file backend: reads remote files via HTTP Range requests.
-    // Designed for PS3 disc image streaming from a local VPS/relay.
+    // HTTP file backend: reads remote files via HTTP Range requests (libcurl).
+    // Designed for PS3 disc image streaming from a VPS/cloud WebDAV server.
     //
     // Architecture:
     //   - LRU chunk cache stores recently-read 1MB blocks
@@ -23,17 +27,41 @@ namespace fs
     //
     // Usage:
     //   1. Register http_device via set_virtual_device("http_dev", ...)
-    //   2. fs::file("http://host/path/to/file.iso") returns an http_file
+    //   2. fs::file("http(s)://[user:pass@]host/path/file.iso") returns an http_file
     //   3. iso_archive reads it through the normal file_base interface
     //
-    // Limitations:
-    //   - HTTP only (no TLS) — use a local network VPS or plain HTTP server
-    //   - Server must support Range requests (most do: nginx, Apache, etc.)
-    //   - Random access patterns beyond prefetch window cause stalls
+    // Transport: libcurl handles TLS (HTTPS with the platform CA store on
+    // Android), HTTP Basic auth (user:pass@ in the URL), redirects and
+    // connection reuse. The server must support Range requests.
 
     constexpr u64 HTTP_CHUNK_SIZE = 1 * 1024 * 1024; // 1 MB per chunk
     constexpr u64 HTTP_PREFETCH_CHUNKS = 4;           // read ahead 4 MB
     constexpr u64 HTTP_MAX_CACHE_CHUNKS = 256;        // 256 MB max cache
+
+    // Owns a libcurl easy handle plus its custom headers. Serialized per-file
+    // through http_file::m_conn_mutex, because one easy handle is one
+    // connection pool and performing on it from several threads at once is UB.
+    class curl_handle
+    {
+    public:
+        curl_handle() = default;
+        ~curl_handle();
+        curl_handle(const curl_handle&) = delete;
+        curl_handle& operator=(const curl_handle&) = delete;
+
+        CURL* get() { return m_curl; }
+
+        // (Re)create the easy handle and configure URL/auth/TLS/headers. Clears
+        // any previous handle first. Safe to call repeatedly (e.g. to recover
+        // from a failed transfer) because http_file serializes all requests.
+        bool setup(const std::string& url);
+
+        void close();
+
+    private:
+        CURL* m_curl = nullptr;
+        curl_slist* m_headers = nullptr;
+    };
 
     struct http_chunk
     {
@@ -106,12 +134,9 @@ namespace fs
         std::condition_variable m_prefetch_cv;
         bool m_prefetch_notify = false;
 
-        // Connection reuse
-        int m_sock_fd = -1;
+        // libcurl transport (one easy handle, serialized via m_conn_mutex)
+        curl_handle m_curl;
         std::mutex m_conn_mutex;
-
-        bool ensure_connection();
-        void close_connection();
     };
 
     // HTTP device: virtual device that opens HTTP URLs as http_file instances
@@ -126,7 +151,7 @@ namespace fs
         std::unique_ptr<file_base> open(const std::string& path, bs_t<open_mode> mode) override;
         std::unique_ptr<dir_base> open_dir(const std::string& path) override;
 
-        // Probe remote file size via HEAD request
+        // Probe remote file size via HEAD (falls back to a 1-byte ranged GET)
         static bool head_size(const std::string& url, u64& out_size);
     };
 

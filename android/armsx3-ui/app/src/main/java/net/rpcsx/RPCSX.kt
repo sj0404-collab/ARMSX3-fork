@@ -91,6 +91,9 @@ class RPCSX {
     external fun install(fd: Int, progressId: Long): Boolean
     /** Install several .pkg parts of one split package together, in order. */
     external fun installSplitPkg(fds: IntArray, progressId: Long): Boolean
+    /** Lazy PKG install streamed from an HTTP(S) URL: no full download, files land
+     *  in dev_hdd0/game as Range reads arrive. Server must support HTTP Range. */
+    external fun installPkgFromUrl(url: String, progressId: Long): Boolean
     /** Delete an installed title's directory. Refused for paths outside dev_hdd0/game. */
     external fun uninstallGame(path: String): Boolean
     external fun installKey(fd: Int, requestId: Long, gamePath: String): Boolean

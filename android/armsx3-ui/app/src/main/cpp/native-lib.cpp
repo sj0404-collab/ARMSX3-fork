@@ -86,6 +86,7 @@ struct RPCSXApi {
   void (*settingsBeginBatch)();
   void (*settingsEndBatch)();
   bool (*installSplitPkg)(JNIEnv *env, const int *fds, int count, long progressId);
+  bool (*installPkgFromUrl)(JNIEnv *env, jstring url, long progressId);
   bool (*uninstallGame)(std::string_view path);
   std::string (*getVersion)();
   void *(*setCustomDriver)(void *driverHandle);
@@ -207,6 +208,7 @@ struct RPCSXLibrary : RPCSXApi {
     result.settingsBeginBatch = reinterpret_cast<decltype(settingsBeginBatch)>(dlsym(handle, "_rpcsx_settingsBeginBatch"));
     result.settingsEndBatch = reinterpret_cast<decltype(settingsEndBatch)>(dlsym(handle, "_rpcsx_settingsEndBatch"));
     result.installSplitPkg = reinterpret_cast<decltype(installSplitPkg)>(dlsym(handle, "_rpcsx_installSplitPkg"));
+    result.installPkgFromUrl = reinterpret_cast<decltype(installPkgFromUrl)>(dlsym(handle, "_rpcsx_installPkgFromUrl"));
     result.uninstallGame = reinterpret_cast<decltype(uninstallGame)>(dlsym(handle, "_rpcsx_uninstallGame"));
     result.getVersion = reinterpret_cast<decltype(getVersion)>(dlsym(handle, "_rpcsx_getVersion"));
     result.setCustomDriver = reinterpret_cast<decltype(setCustomDriver)>(dlsym(handle, "_rpcsx_setCustomDriver"));
@@ -748,6 +750,15 @@ extern "C" JNIEXPORT jboolean JNICALL Java_net_rpcsx_RPCSX_installSplitPkg(
 
   return rpcsxLib.installSplitPkg(env, fds.data(), static_cast<int>(count),
                                   static_cast<long>(progressId));
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_net_rpcsx_RPCSX_installPkgFromUrl(
+    JNIEnv *env, jobject, jstring jurl, jlong progressId) {
+  if (rpcsxLib.installPkgFromUrl == nullptr || jurl == nullptr) {
+    return false;
+  }
+
+  return rpcsxLib.installPkgFromUrl(env, jurl, static_cast<long>(progressId));
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

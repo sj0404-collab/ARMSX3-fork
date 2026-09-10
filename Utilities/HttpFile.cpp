@@ -1,32 +1,123 @@
 #include "HttpFile.h"
 #include "util/logs.hpp"
 
+#include <curl/curl.h>
+
 #include <cstring>
 #include <algorithm>
 #include <numeric>
-#include <sstream>
-
-#ifdef __ANDROID__
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <netdb.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <arpa/inet.h>
-#else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <netdb.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <arpa/inet.h>
-#endif
+#include <string_view>
 
 LOG_CHANNEL(fs_http, "FS HTTP");
+
+namespace
+{
+    // Write sink: receive a fixed-length body into a caller-owned buffer.
+    // Returns 0 when full, which aborts the transfer when the server sends
+    // more bytes than the requested range (should not happen with Range).
+    struct http_sink
+    {
+        u8* buffer;
+        u64 capacity;
+        u64 written = 0;
+    };
+
+    size_t http_write_cb(void* data, size_t size, size_t nmemb, void* userp)
+    {
+        const size_t n = size * nmemb;
+        auto* sink = static_cast<http_sink*>(userp);
+
+        if (sink->written + n > sink->capacity)
+            return 0;
+
+        std::memcpy(sink->buffer + sink->written, data, n);
+        sink->written += n;
+        return n;
+    }
+
+    // Header sink: capture Content-Length (and the total from Content-Range
+    // when the server only reports that, e.g. in response to a ranged GET).
+    struct http_header_sink
+    {
+        u64 content_length = 0;
+    };
+
+    size_t http_header_cb(char* data, size_t size, size_t nmemb, void* userp)
+    {
+        const size_t n = size * nmemb;
+        auto* headers = static_cast<http_header_sink*>(userp);
+
+        std::string_view line(data, n);
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.remove_suffix(1);
+
+        if (line.find("Content-Length:") == 0)
+        {
+            headers->content_length = std::strtoull(line.data() + 15, nullptr, 10);
+        }
+        else if (line.find("Content-Range:") == 0)
+        {
+            // e.g. "bytes 0-1048575/5242880000"
+            const auto slash = line.rfind('/');
+            if (slash != std::string_view::npos)
+            {
+                headers->content_length = std::strtoull(line.data() + slash + 1, nullptr, 10);
+            }
+        }
+
+        return n;
+    }
+
+    // Split "[user[:password]@]" out of scheme://user:pass@host/path, leaving
+    // url without credentials (libcurl would otherwise log them in errors).
+    void split_userinfo(std::string& url, std::string* user, std::string* pass)
+    {
+        const auto scheme_end = url.find("://");
+        if (scheme_end == std::string::npos)
+            return;
+
+        const auto at = url.find('@', scheme_end + 3);
+        if (at == std::string::npos)
+            return;
+
+        std::string_view userinfo(url.data() + scheme_end + 3, at - (scheme_end + 3));
+        const auto colon = userinfo.find(':');
+
+        if (colon == std::string_view::npos)
+        {
+            if (user) *user = std::string(userinfo);
+        }
+        else
+        {
+            if (user) *user = std::string(userinfo.substr(0, colon));
+            if (pass) *pass = std::string(userinfo.substr(colon + 1));
+        }
+
+        url.erase(scheme_end + 3, at - (scheme_end + 3) + 1);
+    }
+
+    // Replace the password in "scheme://user:pass@host/path" with "***" for
+    // log output, so credentials never reach the log.
+    std::string redact_url(const std::string& url)
+    {
+        std::string copy = url;
+
+        const auto scheme_end = copy.find("://");
+        if (scheme_end == std::string::npos)
+            return copy;
+
+        const auto at = copy.find('@', scheme_end + 3);
+        if (at == std::string::npos)
+            return copy;
+
+        const auto colon = copy.find(':', scheme_end + 3);
+        if (colon == std::string::npos || colon > at)
+            return copy;
+
+        copy.replace(colon + 1, at - (colon + 1), "***");
+        return copy;
+    }
+}
 
 namespace fs
 {
@@ -93,80 +184,75 @@ namespace fs
     }
 
     // ============================================================
-    // Low-level HTTP helpers (POSIX sockets, no TLS)
+    // libcurl transport
     // ============================================================
 
-    static bool parse_url(const std::string& url, std::string& host, int& port, std::string& path)
+    curl_handle::~curl_handle()
     {
-        // http://host:port/path
-        const std::string prefix = "http://";
-        if (url.find(prefix) != 0)
+        close();
+    }
+
+    void curl_handle::close()
+    {
+        if (m_headers)
+        {
+            curl_slist_free_all(m_headers);
+            m_headers = nullptr;
+        }
+
+        if (m_curl)
+        {
+            curl_easy_cleanup(m_curl);
+            m_curl = nullptr;
+        }
+    }
+
+    bool curl_handle::setup(const std::string& url)
+    {
+        close();
+
+        std::string req_url = url;
+        std::string user;
+        std::string pass;
+        split_userinfo(req_url, &user, &pass);
+
+        m_curl = curl_easy_init();
+        if (!m_curl)
+        {
+            fs_http.error("curl_easy_init failed");
             return false;
-
-        std::string rest = url.substr(prefix.size());
-
-        // Split host:port/path
-        auto slash_pos = rest.find('/');
-        std::string host_port = (slash_pos != std::string::npos) ? rest.substr(0, slash_pos) : rest;
-        path = (slash_pos != std::string::npos) ? rest.substr(slash_pos) : "/";
-
-        auto colon_pos = host_port.find(':');
-        if (colon_pos != std::string::npos)
-        {
-            host = host_port.substr(0, colon_pos);
-            port = std::stoi(host_port.substr(colon_pos + 1));
-        }
-        else
-        {
-            host = host_port;
-            port = 80;
         }
 
-        return !host.empty();
-    }
+        curl_easy_setopt(m_curl, CURLOPT_URL, req_url.c_str());
+        curl_easy_setopt(m_curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(m_curl, CURLOPT_MAXREDIRS, 5L);
+        curl_easy_setopt(m_curl, CURLOPT_CONNECTTIMEOUT, 10L);
+        curl_easy_setopt(m_curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+        curl_easy_setopt(m_curl, CURLOPT_LOW_SPEED_TIME, 30L);
+        curl_easy_setopt(m_curl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(m_curl, CURLOPT_USERAGENT, "ARMSX3-Core/1.0");
+        curl_easy_setopt(m_curl, CURLOPT_ACCEPT_ENCODING, nullptr); // identity only
 
-    static bool send_all(int fd, const char* buf, size_t len)
-    {
-        size_t sent = 0;
-        while (sent < len)
-        {
-            ssize_t n = ::send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
-            if (n <= 0) return false;
-            sent += n;
-        }
-        return true;
-    }
+#ifdef __ANDROID__
+        // Use the platform CA store on Android (curl's own bundle does not exist there).
+        curl_easy_setopt(m_curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
+#endif
 
-    static bool recv_line(int fd, std::string& line, int timeout_ms = 5000)
-    {
-        line.clear();
-        char c;
-        struct pollfd pfd = {fd, POLLIN, 0};
-        while (true)
+        if (!user.empty())
         {
-            int pr = ::poll(&pfd, 1, timeout_ms);
-            if (pr <= 0) return false;
-            ssize_t n = ::recv(fd, &c, 1, 0);
-            if (n <= 0) return false;
-            if (c == '\n') break;
-            if (c != '\r') line += c;
+            // user:pass@ credentials become HTTP Basic auth. Passwords live in
+            // the URL the app constructs; libcurl sends them only to this host.
+            curl_easy_setopt(m_curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+            curl_easy_setopt(m_curl, CURLOPT_USERNAME, user.c_str());
+            curl_easy_setopt(m_curl, CURLOPT_PASSWORD, pass.c_str());
         }
-        return true;
-    }
 
-    static bool recv_bytes(int fd, void* buf, size_t len, int timeout_ms = 10000)
-    {
-        size_t got = 0;
-        char* ptr = static_cast<char*>(buf);
-        struct pollfd pfd = {fd, POLLIN, 0};
-        while (got < len)
+        m_headers = curl_slist_append(nullptr, "Accept: */*");
+        if (m_headers)
         {
-            int pr = ::poll(&pfd, 1, timeout_ms);
-            if (pr <= 0) return false;
-            ssize_t n = ::recv(fd, ptr + got, len - got, 0);
-            if (n <= 0) return false;
-            got += n;
+            curl_easy_setopt(m_curl, CURLOPT_HTTPHEADER, m_headers);
         }
+
         return true;
     }
 
@@ -192,162 +278,58 @@ namespace fs
         m_prefetch_cv.notify_all();
         if (m_prefetch_thread.joinable())
             m_prefetch_thread.join();
-        close_connection();
-    }
 
-    bool http_file::ensure_connection()
-    {
-        if (m_sock_fd >= 0) return true;
-
-        std::string host;
-        int port;
-        std::string path;
-        if (!parse_url(m_url, host, port, path))
-            return false;
-
-        struct addrinfo hints = {}, *result = nullptr;
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-
-        std::string port_str = std::to_string(port);
-        int gai = ::getaddrinfo(host.c_str(), port_str.c_str(), &hints, &result);
-        if (gai != 0 || !result) return false;
-
-        int fd = ::socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-        if (fd < 0) { ::freeaddrinfo(result); return false; }
-
-        // Set TCP_NODELAY for lower latency
-        int flag = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-
-        // Connect with 5s timeout
-        ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-        int connect_result = ::connect(fd, result->ai_addr, result->ai_addrlen);
-        ::freeaddrinfo(result);
-
-        if (connect_result < 0 && errno != EINPROGRESS)
-        {
-            ::close(fd);
-            return false;
-        }
-
-        if (connect_result < 0)
-        {
-            struct pollfd pfd = {fd, POLLOUT, 0};
-            int pr = ::poll(&pfd, 1, 5000);
-            if (pr <= 0 || !(pfd.revents & POLLOUT))
-            {
-                ::close(fd);
-                return false;
-            }
-            int err = 0;
-            socklen_t elen = sizeof(err);
-            ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen);
-            if (err != 0)
-            {
-                ::close(fd);
-                return false;
-            }
-        }
-
-        // Restore blocking
-        ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
-
-        m_sock_fd = fd;
-        return true;
-    }
-
-    void http_file::close_connection()
-    {
         std::lock_guard lock(m_conn_mutex);
-        if (m_sock_fd >= 0)
-        {
-            ::shutdown(m_sock_fd, SHUT_RDWR);
-            ::close(m_sock_fd);
-            m_sock_fd = -1;
-        }
+        m_curl.close();
     }
 
     bool http_file::http_get_range(u64 offset, u64 length, void* buffer)
     {
         std::lock_guard lock(m_conn_mutex);
 
-        if (!ensure_connection())
-            return false;
-
-        std::string host;
-        int port;
-        std::string path;
-        parse_url(m_url, host, port, path);
-
-        // Build HTTP/1.1 Range request
-        std::ostringstream req;
-        req << "GET " << path << " HTTP/1.1\r\n";
-        req << "Host: " << host;
-        if (port != 80) req << ":" << port;
-        req << "\r\n";
-        req << "Range: bytes=" << offset << "-" << (offset + length - 1) << "\r\n";
-        req << "Connection: keep-alive\r\n";
-        req << "\r\n";
-
-        std::string req_str = req.str();
-        if (!send_all(m_sock_fd, req_str.c_str(), req_str.size()))
+        if (!m_curl.get())
         {
-            close_connection();
-            return false;
-        }
-
-        // Read status line
-        std::string line;
-        if (!recv_line(m_sock_fd, line))
-        {
-            close_connection();
-            return false;
-        }
-
-        // Check for 200 or 206
-        bool ok = false;
-        if (line.find("200") != std::string::npos) ok = true;
-        if (line.find("206") != std::string::npos) ok = true;
-        if (!ok)
-        {
-            fs_http.error("HTTP %s for Range %llu-%llu", line.c_str(), offset, offset + length - 1);
-            close_connection();
-            return false;
-        }
-
-        // Skip headers until empty line
-        u64 content_length = 0;
-        while (true)
-        {
-            if (!recv_line(m_sock_fd, line))
+            if (!m_curl.setup(m_url))
             {
-                close_connection();
+                fs_http.error("Failed to init curl handle for %s", redact_url(m_url).c_str());
                 return false;
             }
-            if (line.empty()) break;
-
-            // Parse Content-Length and Content-Range
-            if (line.find("Content-Length:") == 0)
-            {
-                content_length = std::stoull(line.substr(15));
-            }
-            if (line.find("Content-Range:") == 0)
-            {
-                // bytes 0-1048575/5242880000
-                auto slash = line.rfind('/');
-                if (slash != std::string::npos)
-                {
-                    content_length = std::stoull(line.substr(slash + 1));
-                }
-            }
         }
 
-        // Read body
-        u64 to_read = std::min(length, content_length > 0 ? content_length : length);
-        if (!recv_bytes(m_sock_fd, buffer, to_read))
+        const std::string range = fmt::format("bytes=%llu-%llu", offset, offset + length - 1);
+        curl_easy_setopt(m_curl.get(), CURLOPT_RANGE, range.c_str());
+        curl_easy_setopt(m_curl.get(), CURLOPT_HTTPGET, 1L);
+
+        http_sink sink{static_cast<u8*>(buffer), length};
+        curl_easy_setopt(m_curl.get(), CURLOPT_WRITEFUNCTION, http_write_cb);
+        curl_easy_setopt(m_curl.get(), CURLOPT_WRITEDATA, &sink);
+
+        char errbuf[CURL_ERROR_SIZE] = {};
+        curl_easy_setopt(m_curl.get(), CURLOPT_ERRORBUFFER, errbuf);
+
+        const CURLcode err = curl_easy_perform(m_curl.get());
+        if (err != CURLE_OK)
         {
-            close_connection();
+            fs_http.error("Range GET %llu-%llu failed: %s (%s)", offset, offset + length - 1,
+                          curl_easy_strerror(err), errbuf);
+            m_curl.close();
+            return false;
+        }
+
+        long status = 0;
+        curl_easy_getinfo(m_curl.get(), CURLINFO_RESPONSE_CODE, &status);
+        if (status != 200 && status != 206)
+        {
+            fs_http.error("Range GET %llu-%llu: HTTP %ld", offset, offset + length - 1, status);
+            m_curl.close();
+            return false;
+        }
+
+        if (sink.written != length)
+        {
+            fs_http.error("Range GET %llu-%llu: short read (%llu/%llu)",
+                          offset, offset + length - 1, sink.written, length);
+            m_curl.close();
             return false;
         }
 
@@ -488,73 +470,89 @@ namespace fs
 
     bool http_device::head_size(const std::string& url, u64& out_size)
     {
-        std::string host;
-        int port;
-        std::string path;
-        if (!parse_url(url, host, port, path))
-            return false;
-
-        struct addrinfo hints = {}, *result = nullptr;
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-
-        std::string port_str = std::to_string(port);
-        int gai = ::getaddrinfo(host.c_str(), port_str.c_str(), &hints, &result);
-        if (gai != 0 || !result) return false;
-
-        int fd = ::socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-        if (fd < 0) { ::freeaddrinfo(result); return false; }
-
-        int flag = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-
-        ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-        int cr = ::connect(fd, result->ai_addr, result->ai_addrlen);
-        ::freeaddrinfo(result);
-
-        if (cr < 0 && errno != EINPROGRESS) { ::close(fd); return false; }
-        if (cr < 0)
-        {
-            struct pollfd pfd = {fd, POLLOUT, 0};
-            if (::poll(&pfd, 1, 5000) <= 0) { ::close(fd); return false; }
-        }
-
-        ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
-
-        std::ostringstream req;
-        req << "HEAD " << path << " HTTP/1.1\r\n";
-        req << "Host: " << host;
-        if (port != 80) req << ":" << port;
-        req << "\r\nConnection: close\r\n\r\n";
-
-        std::string req_str = req.str();
-        if (!send_all(fd, req_str.c_str(), req_str.size()))
-        {
-            ::close(fd);
-            return false;
-        }
-
-        std::string line;
-        bool ok = false;
-        if (recv_line(fd, line) && (line.find("200") != std::string::npos || line.find("206") != std::string::npos))
-            ok = true;
-
         out_size = 0;
-        while (ok && recv_line(fd, line))
+
+        // Try a HEAD request first: the cheapest way to learn Content-Length.
         {
-            if (line.empty()) break;
-            if (line.find("Content-Length:") == 0)
-                out_size = std::stoull(line.substr(15));
-            if (line.find("Content-Range:") == 0)
+            curl_handle ch;
+            if (!ch.setup(url))
+                return false;
+
+            http_header_sink headers;
+            http_sink discard{nullptr, 0};
+
+            curl_easy_setopt(ch.get(), CURLOPT_NOBODY, 1L);
+            curl_easy_setopt(ch.get(), CURLOPT_HEADERFUNCTION, http_header_cb);
+            curl_easy_setopt(ch.get(), CURLOPT_HEADERDATA, &headers);
+            curl_easy_setopt(ch.get(), CURLOPT_WRITEFUNCTION, http_write_cb);
+            curl_easy_setopt(ch.get(), CURLOPT_WRITEDATA, &discard);
+
+            char errbuf[CURL_ERROR_SIZE] = {};
+            curl_easy_setopt(ch.get(), CURLOPT_ERRORBUFFER, errbuf);
+
+            const CURLcode err = curl_easy_perform(ch.get());
+            if (err == CURLE_OK)
             {
-                auto slash = line.rfind('/');
-                if (slash != std::string::npos)
-                    out_size = std::stoull(line.substr(slash + 1));
+                long status = 0;
+                curl_easy_getinfo(ch.get(), CURLINFO_RESPONSE_CODE, &status);
+                if (status >= 200 && status < 300 && headers.content_length > 0)
+                {
+                    out_size = headers.content_length;
+                    return true;
+                }
+            }
+            else
+            {
+                fs_http.notice("HEAD %s failed: %s (falling back to ranged GET)", redact_url(url).c_str(),
+                               curl_easy_strerror(err));
             }
         }
 
-        ::close(fd);
-        return ok && out_size > 0;
+        // Some servers refuse HEAD (or return no Content-Length for it). Probe
+        // with a 1-byte ranged GET instead: the total size comes back in
+        // Content-Range: bytes 0-0/N. Range support is mandatory anyway, so
+        // this also doubles as the can-this-file-be-streamed check.
+        curl_handle ch;
+        if (!ch.setup(url))
+            return false;
+
+        u8 probe_byte = 0;
+        http_sink sink{&probe_byte, 1};
+        http_header_sink headers;
+
+        curl_easy_setopt(ch.get(), CURLOPT_RANGE, "bytes=0-0");
+        curl_easy_setopt(ch.get(), CURLOPT_HTTPGET, 1L);
+        curl_easy_setopt(ch.get(), CURLOPT_HEADERFUNCTION, http_header_cb);
+        curl_easy_setopt(ch.get(), CURLOPT_HEADERDATA, &headers);
+        curl_easy_setopt(ch.get(), CURLOPT_WRITEFUNCTION, http_write_cb);
+        curl_easy_setopt(ch.get(), CURLOPT_WRITEDATA, &sink);
+
+        char errbuf[CURL_ERROR_SIZE] = {};
+        curl_easy_setopt(ch.get(), CURLOPT_ERRORBUFFER, errbuf);
+
+        const CURLcode get_err = curl_easy_perform(ch.get());
+        if (get_err != CURLE_OK)
+        {
+            fs_http.error("Probe GET %s: %s (%s)", redact_url(url).c_str(), curl_easy_strerror(get_err), errbuf);
+            return false;
+        }
+
+        long status = 0;
+        curl_easy_getinfo(ch.get(), CURLINFO_RESPONSE_CODE, &status);
+        if (status != 200 && status != 206)
+        {
+            fs_http.error("Probe GET %s: HTTP %ld", redact_url(url).c_str(), status);
+            return false;
+        }
+
+        if (headers.content_length == 0)
+        {
+            fs_http.error("Probe GET %s: no Content-Range/Length in response", redact_url(url).c_str());
+            return false;
+        }
+
+        out_size = headers.content_length;
+        return true;
     }
 
     bool http_device::stat(const std::string& path, stat_t& info)
@@ -586,11 +584,11 @@ namespace fs
         u64 file_size = 0;
         if (!head_size(path, file_size))
         {
-            fs_http.error("Failed to HEAD %s", path.c_str());
+            fs_http.error("Failed to probe %s", redact_url(path).c_str());
             return nullptr;
         }
 
-        fs_http.success("Opened HTTP file %s (%llu bytes)", path.c_str(), file_size);
+        fs_http.success("Opened HTTP file %s (%llu bytes)", redact_url(path).c_str(), file_size);
         return std::make_unique<http_file>(path, file_size);
     }
 
@@ -613,6 +611,14 @@ namespace fs
         static bool initialized = false;
         if (initialized) return;
         initialized = true;
+
+        // curl_global_init is not thread-safe; the guarded first call runs
+        // before any discovered http_file exists, so no race in practice.
+        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
+        {
+            fs_http.error("curl_global_init failed; HTTP file backend disabled");
+            return;
+        }
 
         set_virtual_device("http_dev", stx::make_shared<http_device>());
         fs_http.success("HTTP file backend registered");

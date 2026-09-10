@@ -92,6 +92,24 @@ object CloudSync {
         return candidate
     }
 
+    /** Percent-encode a WebDAV credential for use inside an HTTP URL userinfo. */
+    private fun encodeUserInfo(s: String): String =
+        java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+
+    /** Password-less copy of an URL for logs: `scheme://user:***@host/...`. */
+    private fun redactUrl(url: String): String {
+        val sep = url.indexOf("://")
+        if (sep < 0) return url
+        val at = url.indexOf('@', sep + 3)
+        if (at < 0) return url
+        val colon = url.indexOf(':', sep + 3)
+        return if (colon in (sep + 3) until at) {
+            url.substring(0, colon + 1) + "***" + url.substring(at)
+        } else {
+            url
+        }
+    }
+
     // ---- Persistence ------------------------------------------------------
 
     private const val PrefUrl = "cloud.sync.url"
@@ -447,7 +465,21 @@ object CloudSync {
         }
         val cfg = snapshot().config ?: return@withContext null
         val base = if (cfg.remoteUrl.endsWith("/")) cfg.remoteUrl else "${cfg.remoteUrl}/"
-        val url = "${base}games/$safeRemote"
+
+        // The core plays/installs these files through its own libcurl transport.
+        // Pass credentials in the URL userinfo so curl can authenticate with
+        // Basic auth; the native side strips them before any logging.
+        val user = cfg.username
+        val cred = if (user != null) "${encodeUserInfo(user)}:${encodeUserInfo(cfg.password.orEmpty())}@" else ""
+        val host = when {
+            cred.isEmpty() -> base
+            else -> {
+                val sep = base.indexOf("://")
+                if (sep < 0) base
+                else base.substring(0, sep + 3) + cred + base.substring(sep + 3)
+            }
+        }
+        val url = "${host}games/$safeRemote"
 
         // Verify server is reachable via HEAD before handing URL to the emulator
         val conn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
@@ -466,10 +498,10 @@ object CloudSync {
             }
             val code = runCatching { conn.responseCode }.getOrDefault(-1)
             if (code in 200..299) {
-                Log.i(TAG, "streamGameUrl: HEAD OK ($code) for $url")
+                Log.i(TAG, "streamGameUrl: HEAD OK ($code) for ${redactUrl(url)}")
                 url
             } else {
-                Log.w(TAG, "streamGameUrl: HEAD returned $code for $url")
+                Log.w(TAG, "streamGameUrl: HEAD returned $code for ${redactUrl(url)}")
                 null
             }
         } finally {
