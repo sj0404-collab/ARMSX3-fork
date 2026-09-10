@@ -1,8 +1,29 @@
-ARMSX3
-======
+XENO
+=====
 
-Uses the latest RPCS3 upstream code (the recent ARM64 improvements included). 
+A PS3 emulator for ARM64 Android (fork of ARMSX3, itself RPCS3 with the recent
+ARM64 improvements). Ships as the **XENO** Android app with a dark
+purple/green energy theme, its own boot sting, launcher icon, and wordmark —
+everything else keeps the `com.armsx3` package id and the ARMSX3 identifiers
+underneath.
 
+Highlights
+----------
+
+* Latest RPCS3 upstream code (recent ARM64 improvements included).
+* ARM64 SPU/PPU tuning: GBH/GBB byte-gather paths for i8mm/dotprod cores.
+  If a title ever regresses to `STOP 0x0`, set `RPCSX_DISABLE_SPU_BYTE_GATHER=1`
+  to fall back to the scalar path at runtime — no rebuild needed.
+* Core performance presets (Balanced / Performance / Maximum). They now report
+  honestly: any rejected setting is counted and surfaced in the UI instead of
+  being silently swallowed.
+* Cloud save + game sync over WebDAV (`CloudSync`): per-title save archives plus
+  streamed game downloads. Hardened against zip-slip, connection leaks and
+  settings races; oversized archives are skipped, never truncated.
+* XENO branding (this branch): new launcher icon set (square + round, all
+  densities), in-app mark, notification icon, boot intro sting (1080x1080/30fps
+  h264+aac, same specs `BootSplashActivity` expects) and a recoloured library
+  fallback background GIF. All resource-only — no source changes.
 
 Building
 --------
@@ -13,8 +34,8 @@ CMake 3.30 or newer, and a JDK 17. Android Studio ships all of these.
 Clone with submodules, then fetch the two third party checkouts that are not
 submodules:
 
-    git clone --recursive https://github.com/ARMSX2/ARMSX3.git
-    cd ARMSX3
+    git clone --recursive https://github.com/sj0404-collab/xeno.git
+    cd xeno
     git clone https://github.com/SnowflakePowered/librashader 3rdparty/librashader
     git clone https://github.com/bylaws/libadrenotools android/armsx3-ui/app/src/main/cpp/libadrenotools
 
@@ -50,11 +71,13 @@ Discord's developer portal and drop it in app/libs/ and
 app/src/main/cpp/discord_sdk/ if you want that feature. The build skips it
 otherwise.
 
-Running it needs PS3 firmware, which is not included. 
+Running it needs PS3 firmware, which is not included.
+
 License
 -------
 
 GPL-2.0-only, the same as RPCS3. See LICENSE. Some files may be licensed
 differently, check the file headers.
 
-Based on RPCS3, https://github.com/RPCS3/rpcs3
+Based on RPCS3, https://github.com/RPCS3/rpcs3 — upstream ARMSX3 lives at
+https://github.com/ARMSX2/ARMSX3

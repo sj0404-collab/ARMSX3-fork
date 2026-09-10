@@ -1,3 +1,10 @@
+# XENO — contributing
+
+XENO is a fork of ARMSX3 (RPCS3) built for ARM64 Android, hosted at
+https://github.com/sj0404-collab/xeno. The upstream guidance below still applies.
+Bug reports, feature requests and contributions for this fork belong in *this*
+repository's issue tracker.
+
 # Getting Started
 
 Before getting started using the emulator, read the [Quickstart Guide](https://rpcs3.net/quickstart). After reading it, if you need support, check out [How to ask for Support](https://github.com/RPCS3/rpcs3/wiki/How-to-ask-for-Support).

@@ -2,6 +2,10 @@
 
 Not built by Gradle. Gradle only builds the JNI glue (`src/main/cpp`).
 
+> The XENO rebrand is resource-only: the core and glue `.so` names are unchanged
+> (they are referenced by `build.gradle.kts` / JNI glue), only the APK label,
+> icon set and boot sting were swapped.
+
 | file | origin | why it is here |
 |---|---|---|
 | `libarmsx3-core.so` | `android/configure.sh` + `ninja rpcsx-android`, then `llvm-strip --strip-unneeded` | The emulator. Needs LLVM and a long build, so it is staged rather than built on every Gradle sync. |
