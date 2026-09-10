@@ -49,13 +49,23 @@ jobs:
       - name: Install SDK packages
         shell: bash
         run: |
-          SDK_MANAGER="$(find "$ANDROID_HOME" -type f -name sdkmanager 2>/dev/null | head -1)"
-          test -n "$SDK_MANAGER" || { echo "::error::sdkmanager not found under $ANDROID_HOME"; exit 1; }
-          echo "sdkmanager: $SDK_MANAGER"
-          yes | "$SDK_MANAGER" "ndk;29.0.14206865" \
+          # GitHub-hosted Windows images keep the SDK but not always
+          # cmdline-tools; install it explicitly then use sdkmanager.bat.
+          CT_ZIP="https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
+          mkdir -p "$ANDROID_HOME/cmdline-tools/_ct"
+          curl -sSL -o /tmp/cmdline-tools.zip "$CT_ZIP"
+          unzip -q -o /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools/_ct"
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+          cp -R "$ANDROID_HOME/cmdline-tools/_ct/cmdline-tools/." "$ANDROID_HOME/cmdline-tools/latest/"
+          rm -rf "$ANDROID_HOME/cmdline-tools/_ct" /tmp/cmdline-tools.zip
+          TOOLS_ROOT="$(cygpath -m "$ANDROID_HOME/cmdline-tools/latest")"
+          SDKM="$TOOLS_ROOT/bin/sdkmanager.bat"
+          echo "sdkmanager: $SDKM"
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          yes | cmd //c "$SDKM" --sdk_root="$(cygpath -m "$ANDROID_HOME")" \
+            "ndk;29.0.14206865" \
             "cmake;3.30.5" \
-            "platforms;android-37" \
-            "platform-tools"
+            "platforms;android-37"
 
       - name: Build ARM64 APK
         shell: bash
