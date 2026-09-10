@@ -72,14 +72,19 @@ jobs:
           printf '%s\n' 8933bad161af4178b1185d1a37fbf41ea5269c55 \
             > "$ANDROID_HOME/licenses/android-sdk-preview-license"
           cmd //c "$SDKM" --sdk_root="$ROOT" "ndk;29.0.14206865" "cmake;3.30.5" < /dev/null
-          cmd //c "$SDKM" --sdk_root="$ROOT" "platforms;android-37" < /dev/null || true
+          # No "platforms;android-37" package exists in the repo (only the
+          # minor-line 37.2). Install 37.2 and alias it as android-37, which is
+          # what AGP looks up for compileSdk 37.
+          cmd //c "$SDKM" --sdk_root="$ROOT" "platforms;android-37.2" < /dev/null || true
           if [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
-            PLAT="$(curl -s https://dl.google.com/android/repository/repository2-4.xml | grep -oE 'platform-37_r[0-9]+\.zip' | head -1)"
-            test -n "$PLAT"
-            curl -sSL -o /tmp/plat.zip "https://dl.google.com/android/repository/$PLAT"
-            unzip -q -o /tmp/plat.zip -d "$ANDROID_HOME/platforms/"
+            if [ -d "$ANDROID_HOME/platforms/android-37.2" ]; then
+              cp -R "$ANDROID_HOME/platforms/android-37.2" "$ANDROID_HOME/platforms/android-37"
+            else
+              echo "::error::android-37 platform missing after install"
+              ls "$ANDROID_HOME/platforms/"
+              exit 1
+            fi
           fi
-          ls "$ANDROID_HOME/platforms/" | tail -3
 
       - name: Build ARM64 APK
         shell: bash
