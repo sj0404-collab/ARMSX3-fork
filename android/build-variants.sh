@@ -128,13 +128,17 @@ build_variant() {
 	# toolchain file leaks into the NATIVE ExternalProject, producing ARM64
 	# PE binaries on an x64 host. Fix: tell the native sub-build to use the
 	# host compiler (MinGW gcc, always in PATH on GitHub Windows runners).
-	local native_flags=()
-	if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
-		native_flags=(
-			'-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=gcc;-DCMAKE_C_COMPILER_TARGET=x86_64-w64-mingw32;-DCMAKE_CXX_COMPILER=g++;-DCMAKE_CXX_COMPILER_TARGET=x86_64-w64-mingw32'
-		)
-		echo "==> $name: Windows host — NATIVE LLVM tools will use MinGW gcc"
-	fi
+local native_flags=()
+		if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+			# MinGW links libgcc/libstdc++/winpthread dynamically by default; the
+			# dlopen-style loader that ninja hatches cmd.exe /C under cannot find
+			# those DLLs off-PATH, so llvm-min-tblgen.exe still dies with
+			# 0xC0000139 even when built correctly. Link statically instead.
+			native_flags=(
+				'-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER=gcc;-DCMAKE_CXX_COMPILER=g++;-DCMAKE_EXE_LINKER_FLAGS=-static;-DCMAKE_SHARED_LINKER_FLAGS=-static'
+			)
+			echo "==> $name: Windows host — NATIVE LLVM tools via MinGW, statically linked"
+		fi
 
 	# Does build.ninja already describe exactly the toolchain we want?
 	#
@@ -179,11 +183,15 @@ build_variant() {
 	# volkLoadDevice() repoint the whole renderer at framegen's device. The consequence for the
 	# build is that it is NOT a dependency of libarmsx3-core.so and will not be built by asking
 	# for it: name it here or ship an APK with frame generation silently missing.
+	local ninja_path="$CMAKE_BIN:$PATH"
+	if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+		ninja_path="/c/mingw64/bin:$ninja_path"
+	fi
 	if [[ -d "$ROOT/3rdparty/lsfg/lsfg-vk-android/framegen" ]]; then
-		PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir" android/libarmsx3-core.so armsx3_lsfg
+		PATH="$ninja_path" ninja -C "$build_dir" android/libarmsx3-core.so armsx3_lsfg
 	else
 		echo "==> $name: lsfg-vk-android not present, building without frame generation"
-		PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir" android/libarmsx3-core.so
+		PATH="$ninja_path" ninja -C "$build_dir" android/libarmsx3-core.so
 	fi
 
 	local strip="$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/llvm-strip$NDK_EXE"
