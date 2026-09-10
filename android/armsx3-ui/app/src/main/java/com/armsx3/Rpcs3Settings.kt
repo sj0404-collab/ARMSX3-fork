@@ -280,9 +280,10 @@ object Rpcs3Settings {
     fun setVsync(enabled: Boolean) =
         setEnum("$VIDEO@@VSync Mode", if (enabled) "Full" else "Disabled")
 
-    fun setFrameSkip(skip: Int) {
-        setBool("$VIDEO@@Enable Frame Skip", skip > 0)
-        if (skip > 0) setInt("$VIDEO@@Consecutive Frames To Skip", skip.coerceIn(1, 8))
+    fun setFrameSkip(skip: Int): Boolean {
+        val enabled = setBool("$VIDEO@@Enable Frame Skip", skip > 0)
+        val count = if (skip > 0) setInt("$VIDEO@@Consecutive Frames To Skip", skip.coerceIn(1, 8)) else true
+        return enabled && count
     }
 
     fun setVblankRate(hz: Int) = setInt("$VIDEO@@Vblank Rate", hz.coerceIn(1, 6000))
@@ -673,114 +674,124 @@ object Rpcs3Settings {
         Maximum,
     }
 
-    fun applyPreset(preset: PerformancePreset) {
-        when (preset) {
-            PerformancePreset.Balanced -> applyBalancedPreset()
-            PerformancePreset.Performance -> applyPerformancePreset()
-            PerformancePreset.Maximum -> applyMaximumPreset()
+    fun applyPreset(preset: PerformancePreset): Boolean {
+        val steps = when (preset) {
+            PerformancePreset.Balanced -> balancedPresetSteps()
+            PerformancePreset.Performance -> performancePresetSteps()
+            PerformancePreset.Maximum -> maximumPresetSteps()
         }
+        // Each step reports whether the core accepted the key. A wrong path or
+        // a rejected value must NOT look like victory to the UI: collect and
+        // report failures instead of letting runCatching + a toast hide them.
+        var failed = 0
+        steps.forEach { step -> if (!step()) failed++ }
+        if (failed > 0) {
+            android.util.Log.w(
+                "Rpcs3Settings",
+                "preset ${preset.name}: $failed/${steps.size} settings were not applied",
+            )
+        }
+        return failed == 0
     }
 
-    /** Safe defaults. This is what ships; user preferences override it. */
-    private fun applyBalancedPreset() {
-        setSpuDecoder(3)                     // Recompiler (LLVM)
-        setPpuDecoder(1)                     // Recompiler (LLVM)
-        setSpuBlockSize(2)                   // Giga
-        setPpuThreads(2)                     // the PS3 has two
-        setSpuXFloat(1)                      // Approximate
-        setLlvmThreads(0)                    // auto
-        setMaxSpursThreads(6)
-        setSpuLoopDetection(true)
-        setAccurateSpuReservations(true)
-        setAccurateCacheLineStores(false)
-        setAccurateRsxReservation(false)
-        setAccurateDfma(false)
-        setDazFtz(false)
-        setResolutionScalePercent(100)
-        setStrictRendering(false)
-        setMultithreadedRsx(true)
-        setAsyncTextureStreaming(true)
-        setGpuTextureScaling(true)
-        setVsync(true)
-        setAudioBuffering(true)
-        setTimeStretching(true)
-        setSleepTimersIndex(0)
-    }
+    private fun balancedPresetSteps(): List<() -> Boolean> = listOf(
+        { setSpuDecoder(3) },                 // Recompiler (LLVM)
+        { setPpuDecoder(1) },                 // Recompiler (LLVM)
+        { setSpuBlockSize(2) },               // Giga
+        { setPpuThreads(2) },                 // the PS3 has two
+        { setSpuXFloat(1) },                  // Approximate
+        { setLlvmThreads(0) },                // auto
+        { setMaxSpursThreads(6) },
+        { setSpuLoopDetection(true) },
+        { setAccurateSpuReservations(true) },
+        { setAccurateCacheLineStores(false) },
+        { setAccurateRsxReservation(false) },
+        { setAccurateDfma(false) },
+        { setDazFtz(false) },
+        { setResolutionScalePercent(100) },
+        { setStrictRendering(false) },
+        { setMultithreadedRsx(true) },
+        { setAsyncTextureStreaming(true) },
+        { setGpuTextureScaling(true) },
+        { setVsync(true) },
+        { setAudioBuffering(true) },
+        { setTimeStretching(true) },
+        { setSleepTimersIndex(0) },
+    )
 
     /** Swaps accuracy for speed on every setting that is known to cost real
      *  performance on ARM64.  Everything here is recoverable -- a game that
      *  breaks can be re-run with Balanced or a per-title config. */
-    private fun applyPerformancePreset() {
-        setRenderer("Vulkan")
-        setResolution(2)                     // 1280x720 — the sweet spot on mobile
-        setResolutionScalePercent(100)       // native, no upscaling
-        setPpuDecoder(1)                     // Recompiler (LLVM)
-        setSpuDecoder(3)                     // Recompiler (LLVM)
-        setSpuBlockSize(2)                   // Giga: largest blocks, fewest dispatches
-        setPpuThreads(2)
-        setLlvmThreads(0)
+    private fun performancePresetSteps(): List<() -> Boolean> = listOf(
+        { setRenderer("Vulkan") },
+        { setResolution(2) },                 // 1280x720 — the sweet spot on mobile
+        { setResolutionScalePercent(100) },   // native, no upscaling
+        { setPpuDecoder(1) },                 // Recompiler (LLVM)
+        { setSpuDecoder(3) },                 // Recompiler (LLVM)
+        { setSpuBlockSize(2) },               // Giga: largest blocks, fewest dispatches
+        { setPpuThreads(2) },
+        { setLlvmThreads(0) },
         // The SPU fpu xfloat paths are dramatically cheaper on ARM64 than the
         // scalar fallbacks; Approximate is what upstream recommends for speed.
-        setSpuXFloat(1)
-        setPreciseSpuVerification(false)
-        setSpuVerification(false)
-        setMaxSpursThreads(6)
-        setSpuLoopDetection(true)
+        { setSpuXFloat(1) },
+        { setPreciseSpuVerification(false) },
+        { setSpuVerification(false) },
+        { setMaxSpursThreads(6) },
+        { setSpuLoopDetection(true) },
         // Reservation accuracy is CPU-heavy; the common-case read/modify/write
         // path works fine relaxed on ARM64.
-        setAccurateSpuReservations(false)
-        setAccurateCacheLineStores(false)
-        setAccurateRsxReservation(false)
-        setAccurateSpuDma(false)
-        setAccurateDfma(false)
+        { setAccurateSpuReservations(false) },
+        { setAccurateCacheLineStores(false) },
+        { setAccurateRsxReservation(false) },
+        { setAccurateSpuDma(false) },
+        { setAccurateDfma(false) },
         // DAZ/FTZ is a denormal speed hack that keeps Android GPUs from stalling
         // on subnormal arithmetic.
-        setDazFtz(true)
+        { setDazFtz(true) },
         // GPU-side settings that matter on Adreno/Mali.
-        setVsync(true)
-        setAsyncTextureStreaming(true)
-        setGpuTextureScaling(true)
-        setStrictRendering(false)
-        setMultithreadedRsx(true)
-        setDisableZcull(false)
-        setRelaxedZcull(true)
-        setFrameSkip(0)
-        setVblankRate(60)
-        setAudioFormat("Stereo")
-        setAudioBuffering(true)
-        setTimeStretching(true)
-        setSleepTimersIndex(1)               // Usleep Only — busy-wait on Android
-        setLlvmPrecompilation(true)
-        setSpuCache(true)
-    }
+        { setVsync(true) },
+        { setAsyncTextureStreaming(true) },
+        { setGpuTextureScaling(true) },
+        { setStrictRendering(false) },
+        { setMultithreadedRsx(true) },
+        { setDisableZcull(false) },
+        { setRelaxedZcull(true) },
+        { setFrameSkip(0) },
+        { setVblankRate(60) },
+        { setAudioFormat("Stereo") },
+        { setAudioBuffering(true) },
+        { setTimeStretching(true) },
+        { setSleepTimersIndex(1) },           // Usleep Only — busy-wait on Android
+        { setLlvmPrecompilation(true) },
+        { setSpuCache(true) },
+    )
 
     /** Everything above, plus every AGGRESSIVE setting that can visibly break
      *  a title.  Only select this for games the community has validated. */
-    private fun applyMaximumPreset() {
-        applyPerformancePreset()
-
-        setSpuXFloat(3)                      // Inaccurate — fastest SPU FPU
-        setAccurateSpuReservations(false)
-        setAccurateCacheLineStores(false)
-        setAccurateRsxReservation(false)
-        setAccurateSpuDma(false)
-        setDazFtz(true)
-        setDisableZcull(true)                // kills occlusion queries — breaks some games
-        setRelaxedZcull(true)
-        setForceCpuBlit(false)
-        setPpuNanHandling(false)             // disables NaN checks in the PPU frontend
-        setStrictRendering(false)
-        setWriteColorBuffers(false)
-        setReadColorBuffers(false)
-        setReadDepthBuffer(false)
-        setWriteDepthBuffer(false)
-        setVblankRate(60)
-        setFrameSkip(1)                      // 1-in-30 forced skip — only for the worst titles
-        setPpuThreads(2)
-        setMaxSpursThreads(6)
-        // Aggressive texture streaming loses nothing on Adreno and saves memory.
-        setGpuTextureScaling(true)
-        setAsyncTextureStreaming(true)
-        setVsync(true)
-    }
+    private fun maximumPresetSteps(): List<() -> Boolean> =
+        performancePresetSteps() + listOf(
+            { setSpuXFloat(3) },              // Inaccurate — fastest SPU FPU
+            { setAccurateSpuReservations(false) },
+            { setAccurateCacheLineStores(false) },
+            { setAccurateRsxReservation(false) },
+            { setAccurateSpuDma(false) },
+            { setDazFtz(true) },
+            { setDisableZcull(true) },        // kills occlusion queries — breaks some games
+            { setRelaxedZcull(true) },
+            { setForceCpuBlit(false) },
+            { setPpuNanHandling(false) },     // disables NaN checks in the PPU frontend
+            { setStrictRendering(false) },
+            { setWriteColorBuffers(false) },
+            { setReadColorBuffers(false) },
+            { setReadDepthBuffer(false) },
+            { setWriteDepthBuffer(false) },
+            { setVblankRate(60) },
+            { setFrameSkip(1) },              // skip ~1 of every 30 frames — only for the worst titles
+            { setPpuThreads(2) },
+            { setMaxSpursThreads(6) },
+            // Aggressive texture streaming loses nothing on Adreno and saves memory.
+            { setGpuTextureScaling(true) },
+            { setAsyncTextureStreaming(true) },
+            { setVsync(true) },
+        )
 }

@@ -48,6 +48,40 @@ object CloudSync {
     @Volatile
     var config: Config? = null
 
+    /**
+     * Consistent capture of config + autoPush for use off the UI thread.
+     *
+     * The two are separate @Volatile fields and a caller that checks one then
+     * the other can race a settings change between the reads (a thread starts
+     * on a config that was just cleared, or pushAllSaves runs with autoPush
+     * disabled). Snapshot captures both under one read of each so the worker
+     * decides against the values it will actually use.
+     */
+    data class Snapshot(val config: Config?, val autoPush: Boolean)
+
+    fun snapshot(): Snapshot {
+        // Read autoPush last: it is the gate that decides whether a worker is
+        // spawned at all, so a torn pair only ever over-reports the toggle.
+        val cfg = config
+        return Snapshot(cfg, if (cfg == null) false else autoPush)
+    }
+
+    /**
+     * A title/remote name that cannot climb out of its URL or local path.
+     * Applies to the identifier of a save archive and to file names used for
+     * game downloads; both end up in URL paths and on disk, so any separators,
+     * dot-dot segments, or control characters are rejected outright. Spaces
+     * and Unicode are allowed (legitimate file names on a network share).
+     */
+    private fun safeComponent(name: String): String {
+        val candidate = name.trim().replace('\\', '/')
+        if (candidate.isBlank()) return ""
+        if (candidate.contains('\n') || candidate.contains('\r') || candidate.contains('\u0000')) return ""
+        if (candidate.startsWith("/")) return ""
+        if (candidate.split('/').any { it == ".." || it == "." }) return ""
+        return candidate
+    }
+
     // ---- Persistence ------------------------------------------------------
 
     private const val PrefUrl = "cloud.sync.url"
@@ -97,30 +131,49 @@ object CloudSync {
             .getOrNull()?.edit()?.putBoolean(PrefAuto, enabled)?.apply()
     }
 
-    // ---- Save data --------------------------------------------------------
+    private const val MAX_ARCHIVE_BYTES = 1L shl 30    // 1 GiB per save title
+    private const val MAX_ARCHIVE_ENTRIES = 100_000   // sanity cap on entry count
 
-    /** .zip of the whole savedata root, named "<titleId>.zip". */
-    private fun saveArchive(dir: File, titleId: String): File {
+    /** .zip of the whole savedata root, named "<titleId>.zip".
+     *  Returns null when the archive exceeds the size or entry caps — the
+     *  caller must treat that as "this title did not sync", not crash. */
+    private fun saveArchive(dir: File, titleId: String): File? {
         val staged = File(RPCSX.rootDirectory + "cache/sync-stage")
         staged.mkdirs()
         val out = File(staged, "$titleId.zip")
-        ZipOutputStream(FileOutputStream(out)).use { zos ->
-            dir.walkTopDown().forEach { f ->
-                val rel = dir.toPath().relativize(f.toPath()).toString()
-                if (f.isFile && !rel.endsWith(".tmp")) {
+        try {
+            var total = 0L
+            var entries = 0
+            ZipOutputStream(FileOutputStream(out)).use { zos ->
+                for (f in dir.walkTopDown()) {
+                    val rel = dir.toPath().relativize(f.toPath()).toString()
+                    if (!f.isFile || rel.endsWith(".tmp")) continue
+                    if (entries++ >= MAX_ARCHIVE_ENTRIES) break
                     zos.putNextEntry(ZipEntry(rel))
-                    FileInputStream(f).use { it.copyTo(zos) }
+                    FileInputStream(f).use { it.copyTo(zos) { bytes -> total += bytes } }
                     zos.closeEntry()
+                    if (total > MAX_ARCHIVE_BYTES) break
                 }
             }
+            if (total > MAX_ARCHIVE_BYTES || entries >= MAX_ARCHIVE_ENTRIES) {
+                Log.w(TAG, "save archive for $titleId exceeds caps (${total}B/$entries entries); skipping")
+                out.delete()
+                return null
+            }
+            return out
+        } catch (e: Exception) {
+            Log.e(TAG, "archive failed for $titleId", e)
+            runCatching { out.delete() }
+            return null
         }
-        return out
     }
 
     /** Upload one save title's archive to <remote>/saves/<titleId>.zip */
     private suspend fun uploadArchive(zip: File, titleId: String): Boolean =
         withContext(Dispatchers.IO) {
-            val res = http("saves/${titleId}.zip", "PUT", headers = {
+            val safe = safeComponent(titleId)
+            if (safe.isEmpty()) return@withContext false
+            val res = http("saves/$safe.zip", "PUT", headers = {
                 setRequestProperty("Content-Type", "application/zip")
                 setRequestProperty("Content-Length", zip.length().toString())
             }) { conn ->
@@ -131,11 +184,16 @@ object CloudSync {
 
     /** Download <remote>/saves/<titleId>.zip to a temp file and unzip into savedata/. */
     suspend fun downloadSaves(titleId: String): Boolean = withContext(Dispatchers.IO) {
+        val safeTitle = safeComponent(titleId)
+        if (safeTitle.isEmpty()) {
+            Log.e(TAG, "refusing save sync with unsafe title id '$titleId'")
+            return@withContext false
+        }
         val dest = SaveDataImporter.savedataRoot() ?: return@withContext false
-        val staged = File(RPCSX.rootDirectory + "cache/sync-stage", "dl-$titleId.zip")
+        val staged = File(RPCSX.rootDirectory + "cache/sync-stage", "dl-$safeTitle.zip")
         staged.parentFile?.mkdirs()
 
-        val ok = http("saves/${titleId}.zip", "GET") { conn ->
+        val ok = http("saves/${safeTitle}.zip", "GET") { conn ->
             conn.inputStream.use { input ->
                 FileOutputStream(staged).use { it.write(input.readBytes()) }
             }
@@ -144,20 +202,48 @@ object CloudSync {
         if (!ok) return@withContext false
 
         // Replace the title's save directories atomically.
-        val target = File(dest, titleId)
+        val target = File(dest, safeTitle)
         if (target.exists()) target.deleteRecursively()
-        ZipInputStream(FileInputStream(staged)).use { zin ->
-            var entry = zin.nextEntry
-            while (entry != null) {
-                val outFile = File(dest, entry.name)
-                if (entry.isDirectory) {
-                    outFile.mkdirs()
-                } else {
-                    outFile.parentFile?.mkdirs()
-                    FileOutputStream(outFile).use { zin.copyTo(it) }
+        try {
+            val destCanonical = dest.absoluteFile.canonicalPath
+            ZipInputStream(FileInputStream(staged)).use { zin ->
+                var entry = zin.nextEntry
+                while (entry != null) {
+                    // ZIP-SLIP GUARD: an attacker-controlled zip must never be
+                    // able to climb out of the save root. Reject any entry name
+                    // with a dot-dot segment or an absolute path; the resolved
+                    // canonical path must stay inside the destination.
+                    val candidate = entry.name.replace('\\', '/')
+                    if (candidate.isEmpty() ||
+                        candidate.startsWith("/") ||
+                        candidate.split('/').any { it == ".." || it == "." }
+                    ) {
+                        Log.w(TAG, "skipping zip entry with unsafe name '${entry.name}' in $safeTitle")
+                        zin.closeEntry()
+                        entry = zin.nextEntry
+                        continue
+                    }
+                    val outFile = File(dest, candidate)
+                    if (!outFile.absoluteFile.canonicalPath.startsWith(destCanonical + File.separator)) {
+                        Log.w(TAG, "skipping zip entry escaping save root '${entry.name}' in $safeTitle")
+                        zin.closeEntry()
+                        entry = zin.nextEntry
+                        continue
+                    }
+                    if (entry.isDirectory) {
+                        outFile.mkdirs()
+                    } else {
+                        outFile.parentFile?.mkdirs()
+                        FileOutputStream(outFile).use { zin.copyTo(it) }
+                    }
+                    entry = zin.nextEntry
                 }
-                entry = zin.nextEntry
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "unzip failed for $safeTitle", e)
+            target.deleteRecursively()
+            staged.delete()
+            return@withContext false
         }
         staged.delete()
         true
@@ -170,7 +256,7 @@ object CloudSync {
         root.listFiles().orEmpty()
             .filter { it.isDirectory && !it.name.startsWith(".") }
             .forEach { dir ->
-                val zip = saveArchive(dir, dir.name)
+                val zip = saveArchive(dir, dir.name) ?: return@forEach
                 if (uploadArchive(zip, dir.name)) pushed++
                 zip.delete()
             }
@@ -205,17 +291,25 @@ object CloudSync {
      * every launch.
      */
     suspend fun downloadGame(remoteName: String): String? = withContext(Dispatchers.IO) {
-        val local = File(RPCSX.rootDirectory + "games", remoteName.substringAfterLast('/'))
+        // remoteName is attacker-visible (URL path) AND lands on the local disk
+        // under games/; a "../.." name would both climb the server's directory
+        // and write outside the app data root. Refuse anything unsafe.
+        val safeRemote = safeComponent(remoteName)
+        if (safeRemote.isEmpty()) {
+            Log.e(TAG, "refusing game download with unsafe name '$remoteName'")
+            return@withContext null
+        }
+        val local = File(RPCSX.rootDirectory + "games", safeRemote.substringAfterLast('/'))
         local.parentFile?.mkdirs()
 
-        val remoteSize = headSize("games/$remoteName")
+        val remoteSize = headSize("games/$safeRemote")
         if (local.exists() && remoteSize != null && local.length() == remoteSize) {
-            Log.i(TAG, "cached $remoteName (${local.length()} B)")
+            Log.i(TAG, "cached $safeRemote (${local.length()} B)")
             return@withContext local.absolutePath
         }
 
         // The server may not answer content-length (chunked). Stream anyway.
-        val ok = http("games/$remoteName", "GET") { conn ->
+        val ok = http("games/$safeRemote", "GET") { conn ->
             local.outputStream().use { out ->
                 conn.inputStream.use { it.copyTo(out) }
             }
@@ -226,13 +320,14 @@ object CloudSync {
 
     /** HEAD request for a remote file size. Null when absent or unknown. */
     private suspend fun headSize(path: String): Long? = withContext(Dispatchers.IO) {
+        var conn: HttpURLConnection? = null
         return@withContext runCatching {
-            val c = open(path, "HEAD")
-            c.responseCode
-            val n = c.getHeaderFieldLong("Content-Length", -1)
-            c.disconnect()
+            conn = open(path, "HEAD")
+            conn!!.responseCode
+            val n = conn!!.getHeaderFieldLong("Content-Length", -1)
             if (n >= 0) n else null
-        }.getOrNull()
+        }.onFailure { Log.w(TAG, "HEAD $path failed: ${it.message}") }.getOrNull()
+            .also { conn?.disconnect() }
     }
 
     // ---- Low level --------------------------------------------------------
@@ -255,7 +350,9 @@ object CloudSync {
     }
 
     private suspend fun open(path: String, method: String): HttpURLConnection {
-        val cfg = config ?: throw IllegalStateException("CloudSync not configured")
+        // Pin the config for THIS request; a settings edit mid-flight must not
+        // swap the server underneath an in-progress upload.
+        val cfg = snapshot().config ?: throw IllegalStateException("CloudSync not configured")
         val base = if (cfg.remoteUrl.endsWith("/")) cfg.remoteUrl else "${cfg.remoteUrl}/"
         val conn = URL(base + path).openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000

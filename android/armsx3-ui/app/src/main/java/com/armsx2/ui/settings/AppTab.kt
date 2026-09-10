@@ -983,10 +983,19 @@ private fun PresetRow() {
             destructive = false,
             idPrefix = "settings-preset-${pending.name}",
             onConfirm = {
-                runCatching { com.armsx3.Rpcs3Settings.applyPreset(pending) }
+                val ok = runCatching { com.armsx3.Rpcs3Settings.applyPreset(pending) }
+                    .getOrDefault(false)
                 chosen = pending
                 confirming = null
-                Toast.makeText(context, str("preset.applied"), Toast.LENGTH_SHORT).show()
+                if (ok) {
+                    Toast.makeText(context, str("preset.applied"), Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        context,
+                        str("preset.failed"),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
             },
             onDismiss = { confirming = null },
         )

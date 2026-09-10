@@ -743,9 +743,8 @@ open class MainActivityRuntime : ComponentActivity() {
                     // has real time and must not block the launch of the next
                     // title. Idempotent (PUT overwrite), so the shutdown push
                     // in onDestroy is a harmless duplicate.
-                    if (booted && com.armsx2.CloudSync.autoPush &&
-                        com.armsx2.CloudSync.config != null
-                    ) {
+                    val syncSnapshot = com.armsx2.CloudSync.snapshot()
+                    if (booted && syncSnapshot.autoPush && syncSnapshot.config != null) {
                         kotlin.concurrent.thread(name = "cloud-sync-exit") {
                             runCatching {
                                 val pushed = com.armsx2.CloudSync.pushAllSaves()
@@ -4927,18 +4926,27 @@ open class MainActivityRuntime : ComponentActivity() {
         // would usually be SIGKILLed mid-upload and lose the LAST saves. Run it
         // on a worker and hold the teardown for a bounded window instead: the
         // upload either completes or gives up, and only then does the app die.
-        if (com.armsx2.CloudSync.autoPush && com.armsx2.CloudSync.config != null) {
+        val syncSnapshot = com.armsx2.CloudSync.snapshot()
+        if (syncSnapshot.autoPush && syncSnapshot.config != null) {
             val done = java.util.concurrent.CountDownLatch(1)
             kotlin.concurrent.thread(name = "cloud-sync-final") {
                 runCatching {
                     val pushed = com.armsx2.CloudSync.pushAllSaves()
                     android.util.Log.i("CloudSync", "final sync pushed $pushed save(s)")
-                }
+                }.onFailure { android.util.Log.w("CloudSync", "final sync failed", it) }
                 done.countDown()
             }
             // Bounded generosity: save data is small, but a dead server must not
-            // trap a dying activity on the main thread past this.
-            runCatching { done.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+            // trap a dying activity on the main thread past this. The worker
+            // keeps running even when the timeout trips; a late completion is
+            // still cleaner than a mid-upload SIGKILL, and the PUT retries on
+            // next boot are idempotent.
+            val finished = runCatching {
+                done.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            }.getOrDefault(false)
+            if (!finished) {
+                android.util.Log.w("CloudSync", "final sync did not finish in 10s; process will die with it pending")
+            }
         }
         super.onDestroy()
 

@@ -115,8 +115,15 @@ fun BiosManagerScreen(onBack: () -> Unit, game: com.armsx2.GameInfo? = null) {
                 com.armsx2.runtime.MainActivityRuntime.resolveTreeUriToPosix(uri)
             }.getOrNull()
             if (posixPath != null) {
-                net.rpcsx.FirmwareRepository.setExternalFirmwareDir(posixPath)
-                message = "External firmware directory set: $posixPath"
+                // Refuse directories that are not writable or hold no firmware:
+                // pointing dev_flash at an empty folder is a silent brick — every
+                // VSH/module load fails later with no clear cause.
+                if (net.rpcsx.FirmwareRepository.validateExternalDir(posixPath)) {
+                    net.rpcsx.FirmwareRepository.setExternalFirmwareDir(posixPath)
+                    message = "External firmware directory set: $posixPath"
+                } else {
+                    message = I18n.get("bios.firmware.dirInvalid")
+                }
             } else {
                 message = I18n.get("bios.firmware.failed")
             }

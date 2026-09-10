@@ -15,6 +15,7 @@
 #include "SPUAnalyser.h"
 #include "SPUInterpreter.h"
 #include <algorithm>
+#include <cstdlib>
 #include <thread>
 
 #include "util/v128.hpp"
@@ -81,11 +82,31 @@ void spu_llvm_set_compile_context(spu_llvm_compile_context* context) noexcept
 // against the vector path with the i8mm half alone, and ByteGatherDot handles the bit
 // weights with an addp collapse exactly as upstream ships it. The smoke test is the
 // interpreter cross-check on byte-gather edges (0x00/0x80/0xFF) in cpu/spu_fpu.
-// If a new title ever regresses to STOP 0x0, bisect with the two halves split below.
+// If a new title ever regresses to STOP 0x0, set RPCSX_DISABLE_SPU_BYTE_GATHER=1
+// (runtime switch below) and bisect with the two halves split below.
 #if defined(ARCH_ARM64)
 #define ARMSX3_SPU_ARM64_BYTE_GATHER 1
 #else
 #define ARMSX3_SPU_ARM64_BYTE_GATHER 0
+#endif
+
+// Runtime kill-switch for the byte-gather path, evaluated once per process.
+// Reopening this suspicion path on a title-specific basis must not require a
+// rebuild: the scalar fallback costs a handful of ops and GBB/GBH are rare.
+// The switch is only referenced inside the #if ARMSX3_SPU_ARM64_BYTE_GATHER
+// blocks below, so non-ARM64 builds still preprocess those blocks out.
+#if ARMSX3_SPU_ARM64_BYTE_GATHER
+namespace
+{
+	const bool g_spu_arm64_byte_gather = []() -> bool
+	{
+		if (const char* v = std::getenv("RPCSX_DISABLE_SPU_BYTE_GATHER"); v && *v && *v != '0')
+		{
+			return false;
+		}
+		return true;
+	}();
+}
 #endif
 
 // Defined in SPUCommonRecompiler.cpp; ranges forced to the interpreter.
@@ -6178,7 +6199,7 @@ public:
 		const auto a = get_vr<s16[8]>(op.ra);
 
 #if ARMSX3_SPU_ARM64_BYTE_GATHER
-		if (m_use_i8mm)
+		if (g_spu_arm64_byte_gather && m_use_i8mm)
 		{
 			if (match_vr<s16[8], s32[4], s64[2]>(op.ra, [&](auto c, auto MP)
 			{
@@ -6217,7 +6238,7 @@ public:
 		}
 
 		// Use dot product instructions with special values to shift then sum results into the preferred slot
-		if (m_use_dotprod)
+		if (g_spu_arm64_byte_gather && m_use_dotprod)
 		{
 			if (match_vr<s16[8], s32[4], s64[2]>(op.ra, [&](auto c, auto MP)
 			{
@@ -6271,7 +6292,7 @@ public:
 		const auto a = get_vr<u8[16]>(op.ra);
 
 #if ARMSX3_SPU_ARM64_BYTE_GATHER
-		if (m_use_i8mm)
+		if (g_spu_arm64_byte_gather && m_use_i8mm)
 		{
 			if (match_vr<s8[16], s16[8], s32[4], s64[2]>(op.ra, [&](auto c, auto MP)
 			{
@@ -6314,7 +6335,7 @@ public:
 		}
 
 		// Use dot product instructions with special values to shift then sum results into the preferred slot
-		if (m_use_dotprod)
+		if (g_spu_arm64_byte_gather && m_use_dotprod)
 		{
 			if (match_vr<s8[16], s16[8], s32[4], s64[2]>(op.ra, [&](auto c, auto MP)
 			{
