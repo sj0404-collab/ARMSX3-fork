@@ -159,6 +159,26 @@ build_variant() {
 		fi
 	fi
 
+	# [Windows] The LLVM NATIVE host tools (llvm-min-tblgen.exe) die with
+	# 0xC0000139 (ENTRYPOINT_NOT_FOUND) on hosted runners. Probe the binary
+	# before the long ninja run so the reason lands in the log: target machine,
+	# imported DLLs, and a direct run.
+	if [[ -n "${WINDIR:-}" && -d "$build_dir/3rdparty/llvm/llvm_build/NATIVE" ]]; then
+		echo "==> $name: probing LLVM NATIVE host tools (Windows)"
+		PATH="$CMAKE_BIN:$PATH" ninja -C "$build_dir/3rdparty/llvm/llvm_build/NATIVE" llvm-min-tblgen -k 0 || true
+		local probe="$build_dir/3rdparty/llvm/llvm_build/NATIVE/bin/llvm-min-tblgen.exe"
+		if [[ -f "$probe" ]]; then
+			"$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/llvm-readobj$NDK_EXE" \
+				--file-headers "$probe" 2>&1 | grep -iE "File:|Format:|Machine:" || true
+			"$ANDROID_HOME/ndk/$ndk/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/llvm-objdump$NDK_EXE" \
+				--private-headers "$probe" 2>/dev/null | grep -iE "DLL Name:" | head -20 || true
+			local probe_exit
+			( cd "$(dirname "$probe")" && ./llvm-min-tblgen.exe --version ) >/dev/null 2>&1
+			probe_exit=$?
+			echo "==> probe exit code: $probe_exit"
+		fi
+	fi
+
 	# Frame generation is a separate target on purpose.
 	#
 	# Nothing links libarmsx3_lsfg.so -- the core reaches it with dlopen, because framegen's volk
