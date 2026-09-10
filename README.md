@@ -19,7 +19,9 @@ Highlights
   being silently swallowed.
 * Cloud save + game sync over WebDAV (`CloudSync`): per-title save archives plus
   streamed game downloads. Hardened against zip-slip, connection leaks and
-  settings races; oversized archives are skipped, never truncated.
+  settings races; oversized archives are skipped, never truncated. No server of
+  your own? One-tap presets fill the address for the free WebDAV tiers (pCloud,
+  Koofr, Nextcloud) — you only add your account login.
 * XENO branding (this branch): new launcher icon set (square + round, all
   densities), in-app mark, notification icon, boot intro sting (1080x1080/30fps
   h264+aac, same specs `BootSplashActivity` expects) and a recoloured library

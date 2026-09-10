@@ -186,6 +186,31 @@ private const val CloudUrlKey = "cloud.tab.url"
 private const val CloudUserKey = "cloud.tab.user"
 private const val CloudPassKey = "cloud.tab.pass"
 
+/** Free WebDAV hosts prefilled by one tap in [CloudSection]. */
+private data class CloudProviderPreset(
+    val url: String,
+    val labelKey: String,
+    val hintKey: String,
+)
+
+private val CLOUD_PROVIDERS = listOf(
+    CloudProviderPreset(
+        url = "https://webdav.pcloud.com/",
+        labelKey = "cloud.provider.pcloud",
+        hintKey = "cloud.provider.pcloud.hint",
+    ),
+    CloudProviderPreset(
+        url = "https://app.koofr.net/dav/",
+        labelKey = "cloud.provider.koofr",
+        hintKey = "cloud.provider.koofr.hint",
+    ),
+    CloudProviderPreset(
+        url = "https://your-nextcloud.example/remote.php/dav/files/username/",
+        labelKey = "cloud.provider.nextcloud",
+        hintKey = "cloud.provider.nextcloud.hint",
+    ),
+)
+
 @Composable
 private fun CloudSection() {
     val scope = rememberCoroutineScope()
@@ -210,6 +235,49 @@ private fun CloudSection() {
         }
         Text(
             str("cloud.section.description"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+
+        // One-tap free WebDAV hosts: most users do not own a server, and a preset that fills
+        // the address turns "set up WebDAV" into "create a free account and paste your login".
+        // Credentials are never guessed — only the URL template is prefilled.
+        Text(
+            str("cloud.providers.label"),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, top = 10.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (p in CLOUD_PROVIDERS) {
+                // Resolve the strings here (composition context); onClick is not composable.
+                val presetLabel = str(p.labelKey)
+                val presetHint = str(p.hintKey)
+                OutlinedButton(
+                    onClick = { url = p.url; status = presetHint },
+                    modifier = Modifier
+                        .weight(1f)
+                        .controllerFocusable(
+                            "cloud.provider.${p.labelKey}",
+                            onConfirm = { url = p.url },
+                        ),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = 10.dp,
+                        vertical = 4.dp,
+                    ),
+                ) {
+                    Text(
+                        presetLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+        Text(
+            str("cloud.providers.hint"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 4.dp),
