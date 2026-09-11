@@ -242,7 +242,10 @@ namespace fs
         {
             // user:pass@ credentials become HTTP Basic auth. Passwords live in
             // the URL the app constructs; libcurl sends them only to this host.
-            curl_easy_setopt(m_curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+            // CURLAUTH_BASIC is used explicitly: the macro (libcurl's flags are
+            // bitmasks) hides a C-style cast that trips -Werror=old-style-cast
+            // when curl headers are not system headers, so spell out its value.
+            curl_easy_setopt(m_curl, CURLOPT_HTTPAUTH, 1L);
             curl_easy_setopt(m_curl, CURLOPT_USERNAME, user.c_str());
             curl_easy_setopt(m_curl, CURLOPT_PASSWORD, pass.c_str());
         }
