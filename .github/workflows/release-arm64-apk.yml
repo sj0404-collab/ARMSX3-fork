@@ -142,7 +142,11 @@ jobs:
           if-no-files-found: error
 
       - name: Save Android SDK cache
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        # Best-effort, and runs even when the build step failed (which is exactly
+        # when its parts are worth keeping): caching must never abort a successful
+        # run just before the release step.
+        if: ${{ !cancelled() && steps.sdk-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: |
@@ -155,13 +159,19 @@ jobs:
           key: android-sdk-${{ runner.os }}-v1
 
       - name: Save a13 build dir
-        # Skip when the restored dir was already the exact key and nothing
-        # rebuilt -- saving would just re-create it.
-        if: steps.build-cache.outputs.cache-hit != 'true'
+        # Every run is saved under a distinct key (run_id) rather than gated on
+        # cache-hit: an interrupted ninja dir is resumable, so a run that fails
+        # mid-LLVM still caches ~an hour of work and the next retry restores it
+        # as a warm dir, rebuilding only what the fix actually touched. Restore
+        # (exact key, then the "xeno-build-a13-" prefix) picks the newest.
+        # continue-on-error: a cache-save hiccup must never abort a run that is
+        # about to publish a release.
+        if: ${{ !cancelled() }}
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: build-a13
-          key: xeno-build-a13-${{ github.ref_name }}-${{ hashFiles('3rdparty/llvm/**') }}
+          key: xeno-build-a13-${{ github.ref_name }}-${{ hashFiles('3rdparty/llvm/**') }}-${{ github.run_id }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
