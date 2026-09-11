@@ -154,6 +154,14 @@ object GithubSaveSync {
                 if (!name.endsWith(".zip")) return@forEach
                 val titleId = name.removeSuffix(".zip")
                 if (titleId.isBlank()) return@forEach
+                // A malicious repo could name a zip so titleId resolves outside savedata/
+                // ("..", a leading dot, or a path separator route the File() below astray).
+                if (titleId.startsWith(".") || titleId.contains('/') || titleId.contains('\\') ||
+                    titleId.split('/').any { it == ".." || it == "." }
+                ) {
+                    Log.w(TAG, "skipping pull of unsafe name '$name'")
+                    return@forEach
+                }
                 val encoded = Uri.encode(name)
                 val zipBytes = getRaw("repos/$owner/$repoName/contents/saves/$encoded?ref=$branch") ?: return@forEach
                 val staged = File(RPCSX.rootDirectory + "cache/sync-stage", "gh-$encoded")
@@ -161,10 +169,22 @@ object GithubSaveSync {
                     staged.parentFile?.mkdirs()
                     if (staged.exists()) staged.delete()
                     staged.writeBytes(zipBytes)
-                    val target = File(dest, titleId)
-                    if (target.exists()) target.deleteRecursively()
-                    if (CloudSync.unzipSaveArchive(staged, dest, titleId)) pulled++
-                    Log.i(TAG, "pulled $name (${zipBytes.size} B)")
+                    // Extract into a staging folder FIRST so a corrupt/truncated archive can
+                    // never wipe the local save: the real title dir is only replaced once the
+                    // whole zip unpacked cleanly. Dot-prefixed so the push side skips it.
+                    val stageName = ".gh-stage-$titleId"
+                    if (CloudSync.unzipSaveArchive(staged, dest, stageName)) {
+                        val stagedDir = File(dest, stageName)
+                        val target = File(dest, titleId)
+                        if (target.exists()) target.deleteRecursively()
+                        if (stagedDir.renameTo(target)) pulled++
+                        else stagedDir.deleteRecursively()
+                        Log.i(TAG, "pulled $name (${zipBytes.size} B)")
+                    } else {
+                        File(dest, stageName).deleteRecursively()
+                        Log.w(TAG, "pull of $name failed; local save left untouched")
+                    }
+                    staged.delete()
                 } finally {
                     staged.delete()
                 }
@@ -190,9 +210,12 @@ object GithubSaveSync {
         if (existing != null) {
             return Triple(owner, name, existing.optString("default_branch", "main"))
         }
+        // auto_init=true gives the repo its first commit on a default branch, so the very
+        // first PUT below never races GitHub's "Git Repository is empty." (409) transient
+        // window that repros when a just-created repo has no commit yet.
         val created = postJson(
             "user/repos",
-            JSONObject().put("name", name).put("private", true).put("auto_init", false).toString(),
+            JSONObject().put("name", name).put("private", true).put("auto_init", true).toString(),
         ) ?: throw IllegalStateException("GitHub: could not create private repo '$name'")
         val branch = created.optString("default_branch", "main")
         Log.i(TAG, "created private repo $owner/$name (branch $branch)")
