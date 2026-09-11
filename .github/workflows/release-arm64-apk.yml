@@ -52,7 +52,7 @@ jobs:
         run: git clone --depth 1 https://github.com/SnowflakePowered/librashader 3rdparty/librashader
 
       - name: Fetch libadrenotools
-        run: git clone --depth 1 https://github.com/bylaws/libadrenotools android/armsx3-ui/app/src/main/cpp/libadrenotools
+        run: git clone --depth 1 --recursive https://github.com/bylaws/libadrenotools android/armsx3-ui/app/src/main/cpp/libadrenotools
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
