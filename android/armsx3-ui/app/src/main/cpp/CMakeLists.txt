@@ -161,12 +161,17 @@ target_link_libraries(savers log GLESv2 m)
 # packages it.
 # ---------------------------------------------------------------------------
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
-    add_library(discord_partner_sdk SHARED IMPORTED)
-    set_target_properties(discord_partner_sdk PROPERTIES
-        IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/discord_sdk/arm64-v8a/libdiscord_partner_sdk.so)
+    set(DISCORD_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/discord_sdk)
+    if (EXISTS ${DISCORD_SDK_ROOT}/arm64-v8a/libdiscord_partner_sdk.so)
+        add_library(discord_partner_sdk SHARED IMPORTED)
+        set_target_properties(discord_partner_sdk PROPERTIES
+            IMPORTED_LOCATION ${DISCORD_SDK_ROOT}/arm64-v8a/libdiscord_partner_sdk.so)
 
-    add_library(armsx2_discord SHARED discord_bridge.cpp)
-    target_include_directories(armsx2_discord PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/discord_sdk/include)
-    target_compile_features(armsx2_discord PRIVATE cxx_std_17)
-    target_link_libraries(armsx2_discord discord_partner_sdk log android)
+        add_library(armsx2_discord SHARED discord_bridge.cpp)
+        target_include_directories(armsx2_discord PRIVATE ${DISCORD_SDK_ROOT}/include)
+        target_compile_features(armsx2_discord PRIVATE cxx_std_17)
+        target_link_libraries(armsx2_discord discord_partner_sdk log android)
+    else()
+        message(STATUS "discord_sdk not staged (proprietary, not in git); building without the Discord helper")
+    endif()
 endif()
