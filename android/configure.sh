@@ -48,6 +48,19 @@ if [[ "$SIZE_OPT" != "0" ]]; then
 	)
 fi
 
+# Windows-host cross builds: LLVM's GetHostTriple.cmake returns an EMPTY
+# LLVM_HOST_TRIPLE here. When MSVC / MinGW tests are false (NDK clang on an
+# Android target) it falls into the config.guess branch, which is guarded by
+# "CMAKE_HOST_SYSTEM_NAME STREQUAL Windows AND NOT MSYS" and only prints a
+# warning -- so the cache variable stays "", llvm-config.h never emits the
+# #cmakedefine, and every TU including llvm/lib/TargetParser/Host.cpp dies
+# with "use of undeclared identifier 'LLVM_HOST_TRIPLE'". Pin the device
+# triple explicitly so the define is always generated on CI.
+llvm_host_triple=()
+if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+	llvm_host_triple=("-DLLVM_HOST_TRIPLE=aarch64-none-linux-android${ANDROID_API}")
+fi
+
 exec "$CM/cmake" -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
@@ -77,4 +90,5 @@ exec "$CM/cmake" -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
   -DUSE_LTO=OFF \
   -DASMJIT_NO_SHM_OPEN=ON \
   "${size_flags[@]}" \
+  "${llvm_host_triple[@]}" \
   "$@"
