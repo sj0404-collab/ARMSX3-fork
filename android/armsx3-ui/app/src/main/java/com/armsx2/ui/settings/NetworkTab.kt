@@ -409,6 +409,139 @@ private fun CloudSection() {
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp),
             )
         }
+    } // CloudSection Column
+
+    // Second, independent cloud transport: GitHub save sync. It has its own state, its own
+    // buttons, and never touches the WebDAV config above; both can be configured at once.
+    Spacer(Modifier.height(12.dp))
+    GithubCloudSection()
+}
+
+/** GitHub save sync block: token, repo name, verify/push/pull under the token's own account. */
+@Composable
+private fun GithubCloudSection() {
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    // Local mirrors of the volatile backing store so the fields follow edits.
+    var token by remember { mutableStateOf(com.armsx2.GithubSaveSync.token.orEmpty()) }
+    var repo by remember { mutableStateOf(com.armsx2.GithubSaveSync.repo) }
+
+    val configured = token.trim().isNotBlank()
+
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SettingsDivider()
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("↗", fontSize = 20.sp, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                str("github.section.title"),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Text(
+            str("github.section.description"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+
+        CloudEditRow(
+            controllerId = "github.token",
+            label = str("github.token.label"),
+            description = str("github.token.description"),
+            placeholder = "",
+            value = token,
+            fieldLabel = str("github.token.field"),
+            onChange = { token = it },
+        )
+        CloudEditRow(
+            controllerId = "github.repo",
+            label = str("github.repo.label"),
+            description = str("github.repo.description"),
+            value = repo,
+            fieldLabel = str("github.repo.field"),
+            onChange = { repo = it },
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val save = {
+                com.armsx2.GithubSaveSync.save(token.trim().takeIf { it.isNotBlank() }, repo)
+                if (com.armsx2.GithubSaveSync.token == null) token = ""
+                repo = com.armsx2.GithubSaveSync.repo
+                status = if (com.armsx2.GithubSaveSync.token == null) str("github.disabled") else str("github.ready")
+            }
+            OutlinedButton(
+                onClick = save,
+                modifier = Modifier.weight(1f).controllerFocusable("github.save", onConfirm = save),
+            ) { Text(str("github.save")) }
+            val verify = {
+                if (!busy) scope.launch {
+                    busy = true
+                    status = str("github.verify.fail")
+                    val who = withContext(Dispatchers.IO) { com.armsx2.GithubSaveSync.verify() }
+                    status = if (who != null) I18n.get("github.verify.ok").format(who) else str("github.verify.fail")
+                    busy = false
+                }
+            }
+            OutlinedButton(
+                onClick = verify,
+                enabled = !busy,
+                modifier = Modifier.weight(1f).controllerFocusable("github.verify", onConfirm = verify),
+            ) { Text(str("github.verify")) }
+        }
+
+        if (configured) {
+            ToggleRow(
+                label = str("github.autopush"),
+                value = com.armsx2.GithubSaveSync.autoPush,
+                onChange = { com.armsx2.GithubSaveSync.setAutoPush(it) },
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val push = {
+                    if (!busy) scope.launch {
+                        busy = true
+                        status = str("github.push.working")
+                        val n = withContext(Dispatchers.IO) { com.armsx2.GithubSaveSync.pushAll() }
+                        status = if (n > 0) I18n.get("github.push.ok").format(n) else str("github.push.fail")
+                        busy = false
+                    }
+                }
+                OutlinedButton(
+                    onClick = push,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f).controllerFocusable("github.push", onConfirm = push),
+                ) { Text(str("github.push")) }
+                val pull = {
+                    if (!busy) scope.launch {
+                        busy = true
+                        status = str("github.pull.working")
+                        val n = withContext(Dispatchers.IO) { com.armsx2.GithubSaveSync.pullAll() }
+                        status = if (n > 0) I18n.get("github.pull.ok").format(n) else str("github.pull.fail")
+                        busy = false
+                    }
+                }
+                OutlinedButton(
+                    onClick = pull,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f).controllerFocusable("github.pull", onConfirm = pull),
+                ) { Text(str("github.pull")) }
+            }
+        }
+
+        if (status.isNotEmpty()) {
+            Text(
+                status,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (status.startsWith("✓")) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+            )
+        }
     }
 }
 

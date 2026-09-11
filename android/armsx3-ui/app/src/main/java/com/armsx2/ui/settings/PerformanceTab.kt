@@ -71,39 +71,12 @@ fun PerformanceTab(state: MutableState<Settings>) {
         modifier = Modifier
             .fillMaxWidth(),
     ) {
-        // Prominent latency preset: zero queued GS frames keeps the emulated CPU
-        // from running ahead of presentation, and the Surface requests a matching
-        // high-refresh display mode. Settings scope is supplied by InGameOverlay,
-        // so the same switch naturally supports Global and Game overrides. Off
-        // restores the small, smoother queue and Android's automatic refresh policy.
-        // Removed: PCSX2's GS vsync queue depth. RPCS3 has no equivalent knob.
-        // Speedhack profile presets. Equality against s.copy(...) means the
-        // segment auto-reflects "Custom" once the user tweaks any speedhack below.
-        run {
-            val safe = s.copy(eeCycleRate = 0, eeCycleSkip = 0, mtvu = true, vu1Instant = true,
-                vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = false,
-                // Restore the GPU-quality levers the Fast/Low-End presets lower, so
-                // Optimal is a COMPLETE reset to recommended defaults — not just the
-                // speedhacks (e.g. Texture Preloading back to Full, blending to Basic).
-                // Resolution is left as-is so upscalers aren't dropped to native.
-                accurateBlendingUnit = 1, hwMipmap = true, texturePreloading = 2, hwRov = false)
-            // Fast = speed-first: EE cycle skip + fast CDVD, plus render-side wins
-            // that are safe for most games (native resolution + Basic blending).
-            val fast = s.copy(eeCycleRate = 0, eeCycleSkip = 2, mtvu = true, vu1Instant = true,
-                vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true,
-                upscaleFloat = 1.0f, accurateBlendingUnit = 1)
-            // Low-End = every cheap GPU/CPU lever, MTVU gated on core count. Built
-            // from the shared Settings.lowEndPreset so it matches the setup wizard.
-            val lowEnd = Settings.lowEndPreset(
-                s.copy(eeCycleRate = 0, mtvu = true, vu1Instant = true,
-                    vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true),
-                mtvu = com.armsx2.DeviceTier.mtvuDefault(),
-            )
-            // -1 = no preset matches (custom): no segment highlighted.
-            val idx = when (s) { safe -> 0; fast -> 1; lowEnd -> 2; else -> -1 }
-        // Removed: PS2 speedhack presets (EE cycle rate/skip bundles). No PS3 analogue.
-        }
-        HelpText(str("perf.speedhackProfile.help"))
+        // Whole-core presets (Balanced / Performance / Maximum) are applied from General
+        // settings, live into the RPCS3 config tree with per-step verification. A former
+        // Low-End/Fast speedhack chooser sat here but its widgets computed presets and
+        // rendered nothing while a HelpText described knobs that no longer existed —
+        // those PCSX2-era speedhacks have no RPCS3 equivalent, so the dead block was
+        // retired rather than kept as a placebo.
         SettingsDivider()
         // ---- Display Resolution (HW scaler), NetherSX2-style ----------------
         // Shrinks the game's OUTPUT surface (hardware-composer upscales to the

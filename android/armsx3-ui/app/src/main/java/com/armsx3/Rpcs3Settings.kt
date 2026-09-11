@@ -756,6 +756,11 @@ object Rpcs3Settings {
         { setMultithreadedRsx(true) },
         { setDisableZcull(false) },
         { setRelaxedZcull(true) },
+        // Cheap GPU wins that cost nothing visually on a handheld: MSAA disabled and
+        // no anisotropic filtering are freefill on Adreno/Mali and keep a weak GPU
+        // from spending itself on effects games on a phone cannot display anyway.
+        { setMsaa(0) },                      // Disabled
+        { setAnisotropicFilter(0) },         // off
         { setFrameSkip(0) },
         { setVblankRate(60) },
         { setAudioFormat("Stereo") },
