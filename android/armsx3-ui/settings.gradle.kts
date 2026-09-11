@@ -12,7 +12,11 @@ pluginManagement {
     }
 }
 plugins {
-    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+    // No foojay-resolver-convention: nothing here targets a toolchain. Java
+    // version comes from JAVA_HOME (CI pins it via actions/setup-java), so the
+    // only thing this plugin ever did was add a Plugin-Portal network fetch that
+    // killed CI when that end flaked (the last release build failed exactly on
+    // "org.gradle.toolchains.foojay-resolver-convention:1.0.0 was not found").
 }
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)

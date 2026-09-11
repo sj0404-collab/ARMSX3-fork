@@ -29,21 +29,59 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      # Compute every cache key in one cheap step.
+      #
+      # The warm a13 build dir is keyed on the LLVM SUBMODULE's pinned SHA, not on
+      # hashFiles over the whole LLVM tree: that tree is tens of thousands of files
+      # and hashFiles gets cancelled by GitHub after 120 s, which silently invalidated
+      # the template (the exact failure of the last runs). The pin only changes when
+      # the toolchain is bumped, so it is both stable and O(1) to compute. The recipe
+      # fingerprint (configure/build scripts, a handful of small files) is what busts
+      # the key when cmake arguments change.
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          LLVM_PIN="$(git -C 3rdparty/llvm/llvm rev-parse --short=12 HEAD)"
+          echo "llvm=${LLVM_PIN}" >> "$GITHUB_OUTPUT"
+
+          RECIPE="$(git hash-object \
+              android/configure.sh \
+              android/build-variants.sh \
+              android/stamp-git-version.sh | sha1sum | cut -c1-12)"
+          echo "a13-bin-key=xeno-build-a13-${{ github.ref_name }}-llvm-${LLVM_PIN}-cfg-${RECIPE}" >> "$GITHUB_OUTPUT"
+
+          GRADLE_FILES="android/armsx3-ui/settings.gradle.kts
+                        android/armsx3-ui/gradle.properties
+                        android/armsx3-ui/gradle/wrapper/gradle-wrapper.properties
+                        android/armsx3-ui/app/build.gradle.kts"
+          [ -f android/armsx3-ui/gradle/libs.versions.toml ] && \
+            GRADLE_FILES="$GRADLE_FILES android/armsx3-ui/gradle/libs.versions.toml"
+          GRADLE_CFG="$(git hash-object $GRADLE_FILES | sha1sum | cut -c1-12)"
+          echo "gradle-key=gradle-${{ runner.os }}-${GRADLE_CFG}" >> "$GITHUB_OUTPUT"
+
+          # ANDROID_HOME is machine-level on the hosted image, but make it explicit so the
+          # cache paths below resolve on any runner. GRADLE_USER_HOME is parked inside the
+          # workspace so the whole gradle cache is one self-contained directory to cache.
+          echo "ANDROID_HOME=${ANDROID_HOME:-C:\\Android\\android-sdk}" >> "$GITHUB_ENV"
+          echo "GRADLE_USER_HOME=${{ github.workspace }}/.gradle" >> "$GITHUB_ENV"
+
       # Reuse the previously downloaded Android SDK pieces across runs. The NDK
       # and cmake are pinned, so this cache rarely changes and saves minutes per
-      # run. Saving is guarded by the cache-hit check because actions/cache/save
-      # refuses to overwrite a cache whose key already exists.
+      # run. Paths are ABSOLUTE (${{ env.ANDROID_HOME }}/...), not $ANDROID_HOME/...:
+      # cache paths are literal and a `$VAR` entry silently points at a folder that
+      # never exists, which is why no SDK cache was ever saved before.
       - name: Restore Android SDK cache
         uses: actions/cache/restore@v4
         id: sdk-cache
         with:
           path: |
-            $ANDROID_HOME/cmdline-tools/latest
-            $ANDROID_HOME/licenses
-            $ANDROID_HOME/ndk/29.0.14206865
-            $ANDROID_HOME/cmake/3.30.5
-            $ANDROID_HOME/platforms/android-37
-            $ANDROID_HOME/platforms/android-37.2
+            ${{ env.ANDROID_HOME }}/cmdline-tools/latest
+            ${{ env.ANDROID_HOME }}/licenses
+            ${{ env.ANDROID_HOME }}/ndk/29.0.14206865
+            ${{ env.ANDROID_HOME }}/cmake/3.30.5
+            ${{ env.ANDROID_HOME }}/platforms/android-37
+            ${{ env.ANDROID_HOME }}/platforms/android-37.2
           key: android-sdk-${{ runner.os }}-v1
 
       # librashader and libadrenotools are not submodules upstream; they are
@@ -54,7 +92,7 @@ jobs:
       - name: Fetch libadrenotools
         run: git clone --depth 1 --recursive https://github.com/bylaws/libadrenotools android/armsx3-ui/app/src/main/cpp/libadrenotools
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -112,17 +150,32 @@ jobs:
       # of the ~1.3 GB workspace). ninja is incremental and build-variants.sh is
       # written for warm dirs (it skips cmake when build.ninja already matches
       # the API/-march), so restoring the previous run's build-a13 only rebuilds
-      # what this tag actually changed. The key pins LLVM's source so a toolchain
-      # bump invalidates it; the bare restore-key still lets older dirs be reused
-      # by tag N before tag N+1 has saved its own.
+      # what this tag actually changed. The key pins LLVM's submodule SHA (not a
+      # hashFiles -- see "Compute cache keys") so a toolchain bump invalidates it;
+      # the restore-key prefix still lets older dirs be reused before the first
+      # save for a given ref has been produced.
       - name: Restore a13 build dir
         uses: actions/cache/restore@v4
         id: build-cache
         with:
-          path: build-a13
-          key: xeno-build-a13-${{ github.ref_name }}-${{ hashFiles('3rdparty/llvm/**') }}
+          path: ${{ github.workspace }}/build-a13
+          key: ${{ steps.cache-keys.outputs.a13-bin-key }}
           restore-keys: |
             xeno-build-a13-
+
+      # Gradle dependency cache. Every cold run used to re-download AGP + Kotlin +
+      # the foojay plugin from the network, which is exactly the step that flaked
+      # and killed the last release build. Restoring it makes runs hermetic; the
+      # save step below writes it back under a run-unique key so partial builds
+      # still leave a usable cache.
+      - name: Restore Gradle cache
+        uses: actions/cache/restore@v4
+        id: gradle-cache
+        with:
+          path: ${{ github.workspace }}/.gradle
+          key: ${{ steps.cache-keys.outputs.gradle-key }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Build ARM64 APK
         shell: bash
@@ -131,7 +184,22 @@ jobs:
           JAVA_HOME: "${{ env.JAVA_HOME }}"
           VARIANTS: "${{ github.event.inputs.variant || 'a13' }}"
         run: |
-          OUT_DIR="/tmp/xeno-apk" android/build-variants.sh
+          # Retry the whole build (ninja is incremental, so re-entry is cheap);
+          # the one point of exposure is Gradle pulling resolve-time dependencies
+          # on a cold cache. A couple of retries have so far always worked.
+          status=1
+          for i in 1 2 3; do
+            if OUT_DIR="/tmp/xeno-apk" android/build-variants.sh; then
+              status=0
+              break
+            fi
+            echo "::warning::build attempt $i failed, retrying in 20s"
+            sleep 20
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::error::build failed after 3 attempts"
+            exit 1
+          fi
           echo "APK_NAME=$(ls /tmp/xeno-apk/*.apk | sed 's#.*/##' | head -1)" >> "$GITHUB_ENV"
 
       - name: Upload APK artifact
@@ -150,12 +218,12 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            $ANDROID_HOME/cmdline-tools/latest
-            $ANDROID_HOME/licenses
-            $ANDROID_HOME/ndk/29.0.14206865
-            $ANDROID_HOME/cmake/3.30.5
-            $ANDROID_HOME/platforms/android-37
-            $ANDROID_HOME/platforms/android-37.2
+            ${{ env.ANDROID_HOME }}/cmdline-tools/latest
+            ${{ env.ANDROID_HOME }}/licenses
+            ${{ env.ANDROID_HOME }}/ndk/29.0.14206865
+            ${{ env.ANDROID_HOME }}/cmake/3.30.5
+            ${{ env.ANDROID_HOME }}/platforms/android-37
+            ${{ env.ANDROID_HOME }}/platforms/android-37.2
           key: android-sdk-${{ runner.os }}-v1
 
       - name: Save a13 build dir
@@ -164,16 +232,29 @@ jobs:
         # mid-LLVM still caches ~an hour of work and the next retry restores it
         # as a warm dir, rebuilding only what the fix actually touched. Restore
         # (exact key, then the "xeno-build-a13-" prefix) picks the newest.
-        # continue-on-error: a cache-save hiccup must never abort a run that is
-        # about to publish a release.
+        # Path is absolute: relative "build-a13" never validated on Windows and
+        # the old save step silently produced no cache ("Path does not exist").
         if: ${{ !cancelled() }}
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
-          path: build-a13
-          key: xeno-build-a13-${{ github.ref_name }}-${{ hashFiles('3rdparty/llvm/**') }}-${{ github.run_id }}
+          path: ${{ github.workspace }}/build-a13
+          key: ${{ steps.cache-keys.outputs.a13-bin-key }}-${{ github.run_id }}
+
+      - name: Save Gradle cache
+        # Same run-unique key scheme as the build dir, so a failed Gradle step
+        # still leaves whatever it resolved before dying.
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.gradle
+          key: ${{ steps.cache-keys.outputs.gradle-key }}-${{ github.run_id }}
 
       - name: Create GitHub Release
+        # Manual dispatches on master are for producing an artifact, not a "master"
+        # release; publication only makes sense for a tag.
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}

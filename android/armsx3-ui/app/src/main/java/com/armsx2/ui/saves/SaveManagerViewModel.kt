@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.documentfile.provider.DocumentFile
 import com.armsx2.i18n.I18n
 import com.armsx2.runtime.MainActivityRuntime
 import java.io.File
@@ -94,7 +95,15 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun backupAll() {
+    /**
+     * Back up every visible save state into a folder the user picked (SAF tree URI).
+     *
+     * The destination keeps a per-run stamp folder (backups-<epoch>) and names each
+     * file "<game>--<slot-file>", so exporting twice never collides and the origin of
+     * each state survives a round trip. Persistable write access is requested so the
+     * folder stays writable across app restarts without re-picking it.
+     */
+    fun backupAll(treeUri: android.net.Uri) {
         val files = state.value.saves.map(SaveStateItem::file)
         if (files.isEmpty()) {
             state.value = state.value.copy(error = I18n.get("savestate.noSavesToBackUp"))
@@ -102,15 +111,39 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
         }
         viewModelScope.launch {
             val count = withContext(Dispatchers.IO) {
-                val destination = File(files.first().parentFile, "backups/${System.currentTimeMillis()}").apply { mkdirs() }
-                files.count { file ->
-                    runCatching {
-                        file.copyTo(File(destination, file.name), overwrite = true)
-                        true
-                    }.getOrDefault(false)
+                val context = getApplication<Application>()
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        treeUri,
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                    )
                 }
+                val root = DocumentFile.fromTreeUri(context, treeUri)
+                if (root == null) return@withContext -1
+                val stamp = System.currentTimeMillis()
+                var done = 0
+                for (file in files) {
+                    val ok = runCatching {
+                        val dir = root.findFile("backups-$stamp")
+                            ?: root.createDirectory("backups-$stamp") ?: return@runCatching false
+                        val name = "${file.parentFile?.name ?: "slot"}--${file.name}"
+                        val doc = dir.findFile(name)
+                            ?: dir.createFile("application/octet-stream", name) ?: return@runCatching false
+                        context.contentResolver.openInputStream(file)?.use { input ->
+                            context.contentResolver.openOutputStream(doc.uri)?.use { output ->
+                                input.copyTo(output)
+                            } != null
+                        } ?: false
+                    }.getOrDefault(false)
+                    if (ok) done++
+                }
+                done
             }
-            state.value = state.value.copy(message = "${I18n.get("savestate.backup")} · $count")
+            state.value = when {
+                count < 0 -> state.value.copy(error = I18n.get("savestate.backup"))
+                else -> state.value.copy(message = "${I18n.get("savestate.backup")} · $count")
+            }
         }
     }
 

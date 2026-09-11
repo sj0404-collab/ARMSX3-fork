@@ -55,6 +55,12 @@ fun SaveManagerScreen(onBack: () -> Unit, viewModel: SaveManagerViewModel = view
     val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(viewModel::importState) }
+    // Backup every save state into a user-picked folder. OpenDocumentTree grants a folder, which
+    // is the only "cloud" the app needs locally; the picked folder keeps persistable write access
+    // so repeat backups land there without re-picking.
+    val backupLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
+    ) { uri -> uri?.let(viewModel::backupAll) }
 
     ArmsBackdrop {
         LazyColumn(
@@ -69,7 +75,7 @@ fun SaveManagerScreen(onBack: () -> Unit, viewModel: SaveManagerViewModel = view
                     actions = {
                         RoundAction("⤓", str("savestate.import"), onClick = { importLauncher.launch(arrayOf("*/*")) })
                         if (state.saves.isNotEmpty()) {
-                            RoundAction("▣", str("savestate.backup"), viewModel::backupAll)
+                            RoundAction("▣", str("savestate.backup"), onClick = { backupLauncher.launch(null) })
                         }
                         RoundAction("↻", str("games.card.refresh"), viewModel::refresh)
                     },
