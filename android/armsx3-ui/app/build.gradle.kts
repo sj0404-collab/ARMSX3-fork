@@ -34,8 +34,8 @@ android {
         // agree -- an APK that installs below its core's target is a dlopen failure at boot.
         minSdk = (project.findProperty("armsx3.minSdk") as String?)?.toInt() ?: 33
         targetSdk = 37
-        versionCode = 62
-        versionName = "0.9.8"
+        versionCode = 63
+        versionName = "0.9.9"
 
         // ARMSX2's UI reads these. STORAGE_ALL_FILES gates the all-files storage path in
         // onboarding; IN_APP_UPDATER gates the in-app GitHub-release updater.
@@ -269,7 +269,14 @@ dependencies {
     // without this the :discord process aborts with ClassNotFoundException even
     // though the .so links fine. proguard-rules.pro keeps them from being
     // renamed for the same reason.
-    implementation(files("libs/discord_partner_sdk.aar"))
+    //
+    // The .aar is NOT in git (proprietary, distributed per-app from the portal),
+    // so CI builds skip it; a local build with the staged .aar picks it up. The
+    // app compiles without it -- the SDK is only reached by reflection at
+    // runtime -- and the Discord UI degrades to the "not signed in" state.
+    if (file("libs/discord_partner_sdk.aar").exists()) {
+        implementation(files("libs/discord_partner_sdk.aar"))
+    }
 
     implementation(libs.androidx.browser)
 
