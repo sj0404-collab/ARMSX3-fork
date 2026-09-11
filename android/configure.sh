@@ -43,8 +43,16 @@ if [[ "$SIZE_OPT" != "0" ]]; then
 		-DCMAKE_C_FLAGS="-ffunction-sections -fdata-sections"
 		-DCMAKE_CXX_FLAGS="-ffunction-sections -fdata-sections"
 		-DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections"
-		-DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections"
+		-DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections -Wl,--icf=safe"
 		-DCMAKE_MODULE_LINKER_FLAGS="-Wl,--gc-sections"
+		# LLVM is linked in whole from its static libs. Its tests, benchmarks and
+		# examples are pure build time, nothing the core links, so skip them.
+		-DLLVM_INCLUDE_TESTS=OFF \
+		-DLLVM_INCLUDE_BENCHMARKS=OFF \
+		-DLLVM_INCLUDE_EXAMPLES=OFF \
+		# Release already sets assertions off; make it explicit rather than trust
+		# a configure default that has flipped before.
+		-DLLVM_ENABLE_ASSERTIONS=OFF \
 	)
 fi
 
