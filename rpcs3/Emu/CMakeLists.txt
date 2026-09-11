@@ -152,9 +152,18 @@ target_sources(rpcs3_emu PRIVATE
     Audio/AudioDumper.cpp
     Audio/AudioBackend.cpp
     Audio/Cubeb/CubebBackend.cpp
-    Audio/Oboe/OboeBackend.cpp
     Audio/Cubeb/cubeb_enumerator.cpp
 )
+
+# Oboe is an Android-only audio library; the 3rdparty::oboe target (and its
+# include dir) is linked only when ANDROID is set, so compiling this source
+# unconditionally breaks every desktop build. Guard it the same way the
+# desktop GL compatibility layer is guarded above.
+if(ANDROID)
+    target_sources(rpcs3_emu PRIVATE
+        Audio/Oboe/OboeBackend.cpp
+    )
+endif()
 
 if(USE_FAUDIO)
     find_package(SDL3)
