@@ -64,6 +64,16 @@ else()
 	endif()
 
 	add_compile_options(-Werror=old-style-cast)
+	if(ANDROID)
+		# Vendored third-party headers are NOT system headers in the Android
+		# build (they ride plain -I, not -isystem), so macros they ship with
+		# C-style casts -- libcurl's CURLAUTH_BASIC = ((unsigned long)1) << 0
+		# is the offender -- trip -Werror=old-style-cast inside a TU that merely
+		# uses them, and the cast comes from the header, not our code. Keep the
+		# lint but demote it to a warning on Android so one external macro cannot
+		# fail the whole core build.
+		add_compile_options(-Wno-error=old-style-cast)
+	endif()
 	add_compile_options(-Werror=sign-compare)
 	add_compile_options(-Werror=reorder)
 	add_compile_options(-Werror=return-type)
