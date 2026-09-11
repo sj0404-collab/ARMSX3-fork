@@ -165,7 +165,7 @@ object CloudSync {
     /** .zip of the whole savedata root, named "<titleId>.zip".
      *  Returns null when the archive exceeds the size or entry caps — the
      *  caller must treat that as "this title did not sync", not crash. */
-    private fun saveArchive(dir: File, titleId: String): File? {
+    internal fun saveArchive(dir: File, titleId: String): File? {
         val staged = File(RPCSX.rootDirectory + "cache/sync-stage")
         staged.mkdirs()
         val out = File(staged, "$titleId.zip")
@@ -210,6 +210,57 @@ object CloudSync {
             res in 200..204
         }
 
+    /**
+     * Extract the archive created by [saveArchive] into savedata/<titleId>/, replacing
+     * anything already there. The zip entries are relative to the title folder, so they
+     * land inside a fresh, title-named directory. Shared with the GitHub transport.
+     *
+     * ZIP-SLIP GUARD lives here: an attacker-controlled zip must never be able to climb
+     * out of the save root. Any entry name with a dot-dot segment or an absolute path is
+     * rejected, and the resolved canonical path must stay inside the destination.
+     */
+    internal fun unzipSaveArchive(zipFile: File, destRoot: File, titleId: String): Boolean {
+        val target = File(destRoot, titleId)
+        target.mkdirs()
+        val targetCanonical = target.absoluteFile.canonicalPath + File.separator
+        try {
+            ZipInputStream(FileInputStream(zipFile)).use { zin ->
+                var entry = zin.nextEntry
+                while (entry != null) {
+                    val candidate = entry.name.replace('\\', '/')
+                    if (candidate.isEmpty() ||
+                        candidate.startsWith("/") ||
+                        candidate.split('/').any { it == ".." || it == "." }
+                    ) {
+                        Log.w(TAG, "skipping zip entry with unsafe name '${entry.name}' in $titleId")
+                        zin.closeEntry()
+                        entry = zin.nextEntry
+                        continue
+                    }
+                    val outFile = File(target, candidate)
+                    if (!outFile.absoluteFile.canonicalPath.startsWith(targetCanonical)) {
+                        Log.w(TAG, "skipping zip entry escaping save root '${entry.name}' in $titleId")
+                        zin.closeEntry()
+                        entry = zin.nextEntry
+                        continue
+                    }
+                    if (entry.isDirectory) {
+                        outFile.mkdirs()
+                    } else {
+                        outFile.parentFile?.mkdirs()
+                        FileOutputStream(outFile).use { zin.copyTo(it) }
+                    }
+                    entry = zin.nextEntry
+                }
+            }
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "unzip failed for $titleId", e)
+            target.deleteRecursively()
+            return false
+        }
+    }
+
     /** Download <remote>/saves/<titleId>.zip to a temp file and unzip into savedata/. */
     suspend fun downloadSaves(titleId: String): Boolean = withContext(Dispatchers.IO) {
         val safeTitle = safeComponent(titleId)
@@ -232,48 +283,12 @@ object CloudSync {
         // Replace the title's save directories atomically.
         val target = File(dest, safeTitle)
         if (target.exists()) target.deleteRecursively()
-        try {
-            val destCanonical = dest.absoluteFile.canonicalPath
-            ZipInputStream(FileInputStream(staged)).use { zin ->
-                var entry = zin.nextEntry
-                while (entry != null) {
-                    // ZIP-SLIP GUARD: an attacker-controlled zip must never be
-                    // able to climb out of the save root. Reject any entry name
-                    // with a dot-dot segment or an absolute path; the resolved
-                    // canonical path must stay inside the destination.
-                    val candidate = entry.name.replace('\\', '/')
-                    if (candidate.isEmpty() ||
-                        candidate.startsWith("/") ||
-                        candidate.split('/').any { it == ".." || it == "." }
-                    ) {
-                        Log.w(TAG, "skipping zip entry with unsafe name '${entry.name}' in $safeTitle")
-                        zin.closeEntry()
-                        entry = zin.nextEntry
-                        continue
-                    }
-                    val outFile = File(dest, candidate)
-                    if (!outFile.absoluteFile.canonicalPath.startsWith(destCanonical + File.separator)) {
-                        Log.w(TAG, "skipping zip entry escaping save root '${entry.name}' in $safeTitle")
-                        zin.closeEntry()
-                        entry = zin.nextEntry
-                        continue
-                    }
-                    if (entry.isDirectory) {
-                        outFile.mkdirs()
-                    } else {
-                        outFile.parentFile?.mkdirs()
-                        FileOutputStream(outFile).use { zin.copyTo(it) }
-                    }
-                    entry = zin.nextEntry
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "unzip failed for $safeTitle", e)
+        val extracted = unzipSaveArchive(staged, dest, safeTitle)
+        staged.delete()
+        if (!extracted) {
             target.deleteRecursively()
-            staged.delete()
             return@withContext false
         }
-        staged.delete()
         true
     }
 

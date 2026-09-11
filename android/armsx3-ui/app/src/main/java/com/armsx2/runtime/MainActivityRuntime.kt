@@ -752,6 +752,17 @@ open class MainActivityRuntime : ComponentActivity() {
                             }
                         }
                     }
+                    // GitHub transport is independent of the WebDAV one — run it as its own
+                    // worker if configured, so a game exit syncs to whichever cloud is set up.
+                    val ghSnapshot = com.armsx2.GithubSaveSync.snapshot()
+                    if (booted && ghSnapshot.autoPush && ghSnapshot.token != null) {
+                        kotlin.concurrent.thread(name = "github-sync-exit") {
+                            runCatching {
+                                val pushed = com.armsx2.GithubSaveSync.pushAll()
+                                android.util.Log.i("GithubSaveSync", "game-exit sync pushed $pushed save(s)")
+                            }
+                        }
+                    }
                     val restartNow = synchronized(vmLifecycleLock) {
                         vmRunLoopActive = false
                         vmStopInProgress = false
@@ -2163,6 +2174,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.PauseMusic.load()
         com.armsx2.MenuSfx.load(applicationContext)
         com.armsx2.CloudSync.load()
+        com.armsx2.GithubSaveSync.load()
         com.armsx2.ControllerSkinStore.load(applicationContext)
         // Low-battery / high-temperature banners. Registers for the sticky battery broadcast, so
         // there is no polling; the toggle lives in App settings.
@@ -4927,13 +4939,26 @@ open class MainActivityRuntime : ComponentActivity() {
         // on a worker and hold the teardown for a bounded window instead: the
         // upload either completes or gives up, and only then does the app die.
         val syncSnapshot = com.armsx2.CloudSync.snapshot()
-        if (syncSnapshot.autoPush && syncSnapshot.config != null) {
+        val ghSnapshot = com.armsx2.GithubSaveSync.snapshot()
+        val anyCloud = (syncSnapshot.autoPush && syncSnapshot.config != null) ||
+                (ghSnapshot.autoPush && ghSnapshot.token != null)
+        if (anyCloud) {
             val done = java.util.concurrent.CountDownLatch(1)
             kotlin.concurrent.thread(name = "cloud-sync-final") {
-                runCatching {
-                    val pushed = com.armsx2.CloudSync.pushAllSaves()
-                    android.util.Log.i("CloudSync", "final sync pushed $pushed save(s)")
-                }.onFailure { android.util.Log.w("CloudSync", "final sync failed", it) }
+                if (syncSnapshot.autoPush && syncSnapshot.config != null) {
+                    runCatching {
+                        val pushed = com.armsx2.CloudSync.pushAllSaves()
+                        android.util.Log.i("CloudSync", "final sync pushed $pushed save(s)")
+                    }.onFailure { android.util.Log.w("CloudSync", "final sync failed", it) }
+                }
+                // GitHub transport is independent of the WebDAV transport; sync
+                // to whichever, or both, are configured before the process dies.
+                if (ghSnapshot.autoPush && ghSnapshot.token != null) {
+                    runCatching {
+                        val pushed = com.armsx2.GithubSaveSync.pushAll()
+                        android.util.Log.i("GithubSaveSync", "final sync pushed $pushed save(s)")
+                    }.onFailure { android.util.Log.w("GithubSaveSync", "final sync failed", it) }
+                }
                 done.countDown()
             }
             // Bounded generosity: save data is small, but a dead server must not
