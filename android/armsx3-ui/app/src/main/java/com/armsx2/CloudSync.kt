@@ -153,7 +153,7 @@ object CloudSync {
     @Volatile
     var autoPush: Boolean = false
 
-    fun setAutoPush(enabled: Boolean) {
+    fun updateAutoPush(enabled: Boolean) {
         autoPush = enabled
         runCatching { com.armsx2.runtime.MainActivityRuntime.prefs }
             .getOrNull()?.edit()?.putBoolean(PrefAuto, enabled)?.apply()
@@ -178,7 +178,14 @@ object CloudSync {
                     if (!f.isFile || rel.endsWith(".tmp")) continue
                     if (entries++ >= MAX_ARCHIVE_ENTRIES) break
                     zos.putNextEntry(ZipEntry(rel))
-                    FileInputStream(f).use { it.copyTo(zos) { bytes -> total += bytes } }
+                    FileInputStream(f).use { fis ->
+                        val buf = ByteArray(8192)
+                        var n: Int
+                        while (fis.read(buf).also { n = it } != -1) {
+                            total += n
+                            zos.write(buf, 0, n)
+                        }
+                    }
                     zos.closeEntry()
                     if (total > MAX_ARCHIVE_BYTES) break
                 }
@@ -201,9 +208,9 @@ object CloudSync {
         withContext(Dispatchers.IO) {
             val safe = safeComponent(titleId)
             if (safe.isEmpty()) return@withContext false
-            val res = http("saves/$safe.zip", "PUT", headers = {
-                setRequestProperty("Content-Type", "application/zip")
-                setRequestProperty("Content-Length", zip.length().toString())
+            val res = http("saves/$safe.zip", "PUT", headers = { conn ->
+                conn.setRequestProperty("Content-Type", "application/zip")
+                conn.setRequestProperty("Content-Length", zip.length().toString())
             }) { conn ->
                 zip.inputStream().use { it.copyTo(conn.outputStream) }
             }

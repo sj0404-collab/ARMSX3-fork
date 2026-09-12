@@ -912,7 +912,6 @@ private fun ClearCacheRow() {
  *  the "start clean" button. Per-game overrides are deliberately left alone: they belong to
  *  individual games, are invisible from here, and wiping them from a global page would be a
  *  surprise. Controller binds live in ControllerMappings and keep their own reset. */
-@Composable
 /**
  * Command row that applies a whole-core [com.armsx3.Rpcs3Settings.PerformancePreset].
  *
@@ -929,11 +928,13 @@ private fun PresetRow() {
     }
     var confirming by remember { mutableStateOf<com.armsx3.Rpcs3Settings.PerformancePreset?>(null) }
 
+    @Composable
     fun label(preset: com.armsx3.Rpcs3Settings.PerformancePreset): String = when (preset) {
         com.armsx3.Rpcs3Settings.PerformancePreset.Balanced -> str("preset.balanced")
         com.armsx3.Rpcs3Settings.PerformancePreset.Performance -> str("preset.performance")
         com.armsx3.Rpcs3Settings.PerformancePreset.Maximum -> str("preset.maximum")
     }
+    @Composable
     fun desc(preset: com.armsx3.Rpcs3Settings.PerformancePreset): String = when (preset) {
         com.armsx3.Rpcs3Settings.PerformancePreset.Balanced -> str("preset.balanced.desc")
         com.armsx3.Rpcs3Settings.PerformancePreset.Performance -> str("preset.performance.desc")
@@ -976,6 +977,8 @@ private fun PresetRow() {
     }
 
     confirming?.let { pending ->
+        val presetApplied = str("preset.applied")
+        val presetFailed = str("preset.failed")
         com.armsx2.ui.common.ConfirmOverlay(
             title = label(pending),
             message = str("preset.apply.confirm"),
@@ -988,11 +991,11 @@ private fun PresetRow() {
                 chosen = pending
                 confirming = null
                 if (ok) {
-                    Toast.makeText(context, str("preset.applied"), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, presetApplied, Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(
                         context,
-                        str("preset.failed"),
+                        presetFailed,
                         Toast.LENGTH_LONG,
                     ).show()
                 }
@@ -1002,6 +1005,7 @@ private fun PresetRow() {
     }
 }
 
+@Composable
 private fun ResetAllSettingsRow() {
     var confirming by remember { mutableStateOf(false) }
 

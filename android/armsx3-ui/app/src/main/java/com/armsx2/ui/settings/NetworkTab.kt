@@ -327,6 +327,8 @@ private fun CloudSection() {
         // Saving writes credentials to app-private SharedPreferences. Show that the config
         // changed rather than hiding the secret behind a save that never happens.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val savedLabel = str("cloud.status.saved")
+            val disabledLabel = str("cloud.status.disabled")
             val save = {
                 val updated = if (url.isBlank()) null
                 else com.armsx2.CloudSync.Config(
@@ -335,17 +337,18 @@ private fun CloudSection() {
                     password = pass.takeIf { it.isNotBlank() },
                 )
                 com.armsx2.CloudSync.save(updated)
-                status = if (updated == null) str("cloud.status.disabled") else str("cloud.status.saved")
+                status = if (updated == null) disabledLabel else savedLabel
             }
             OutlinedButton(
                 onClick = save,
                 modifier = Modifier.weight(1f).controllerFocusable("cloud.save", onConfirm = save),
             ) { Text(str("cloud.save")) }
             if (com.armsx2.CloudSync.config != null) {
+                val clearDisabled = str("cloud.status.disabled")
                 val clear = {
                     com.armsx2.CloudSync.save(null)
                     url = ""; user = ""; pass = ""
-                    status = str("cloud.status.disabled")
+                    status = clearDisabled
                 }
                 OutlinedButton(
                     onClick = clear,
@@ -360,14 +363,15 @@ private fun CloudSection() {
                 label = str("cloud.autopush"),
                 value = com.armsx2.CloudSync.autoPush,
                 description = str("cloud.autopush.description"),
-                onChange = { com.armsx2.CloudSync.setAutoPush(it) },
+                onChange = { com.armsx2.CloudSync.updateAutoPush(it) },
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val cloudWorking = str("cloud.working")
                 val push = {
                     if (!busy) scope.launch {
                         busy = true
-                        status = str("cloud.working")
+                        status = cloudWorking
                         val n = withContext(Dispatchers.IO) { com.armsx2.CloudSync.pushAllSaves() }
                         status = I18n.get("cloud.pushed").format(n)
                         busy = false
@@ -381,7 +385,7 @@ private fun CloudSection() {
                 val pull = {
                     if (!busy) scope.launch {
                         busy = true
-                        status = str("cloud.working")
+                        status = cloudWorking
                         val n = withContext(Dispatchers.IO) { com.armsx2.CloudSync.pullAllSaves() }
                         status = I18n.get("cloud.pulled").format(n)
                         busy = false
@@ -489,57 +493,64 @@ private fun CloudGameRow(busy: Boolean, setBusy: (Boolean) -> Unit) {
             onChange = { name = it },
         )
         if (name.isNotBlank()) {
+            val dlWorking = str("cloud.download.working")
+            val dlDone = str("cloud.download.done")
+            val dlFailed = str("cloud.download.failed")
             val launch = {
                 if (!busy) scope.launch {
                     setBusy(true)
-                    status = str("cloud.download.working")
+                    status = dlWorking
                     val local = withContext(Dispatchers.IO) { com.armsx2.CloudSync.downloadGame(name) }
                     setBusy(false)
                     if (local != null) {
-                        status = str("cloud.download.done")
+                        status = dlDone
                         com.armsx2.runtime.MainActivityRuntime.launchGame(local)
                     } else {
-                        status = str("cloud.download.failed")
+                        status = dlFailed
                     }
                 }
             }
+            val streamWorking = str("cloud.games.stream.working")
+            val streamDone = str("cloud.games.stream.done")
+            val streamFailed = str("cloud.games.stream.failed")
             val stream = {
                 if (!busy) scope.launch {
                     setBusy(true)
-                    status = str("cloud.games.stream.working")
+                    status = streamWorking
                     val url = withContext(Dispatchers.IO) { com.armsx2.CloudSync.streamGameUrl(name) }
                     setBusy(false)
                     if (url != null) {
-                        status = str("cloud.games.stream.done")
+                        status = streamDone
                         com.armsx2.runtime.MainActivityRuntime.launchGame(url)
                     } else {
-                        status = str("cloud.games.stream.failed")
+                        status = streamFailed
                     }
                 }
             }
+            val context = LocalContext.current
+            val installWorking = str("cloud.games.install.working")
+            val installDone = str("cloud.games.install.done")
+            val installFailed = str("cloud.games.install.failed")
             val install = {
                 if (!busy) scope.launch {
                     setBusy(true)
-                    status = str("cloud.games.install.working")
+                    status = installWorking
                     val url = withContext(Dispatchers.IO) { com.armsx2.CloudSync.streamGameUrl(name) }
                     if (url != null) {
-                        val context = LocalContext.current
-                        val id = ProgressRepository.create(context, str("cloud.games.install.working"))
+                        val id = ProgressRepository.create(context, installWorking)
                         val ok = withContext(Dispatchers.IO) { RPCSX.instance.installPkgFromUrl(url, id) }
                         setBusy(false)
                         if (ok) {
-                            // Force the library to re-read storage; the folder set
-                            // is unchanged so nothing else would prompt a rescan.
                             withContext(Dispatchers.IO) {
                                 com.armsx2.data.library.GameLibraryRepository(context).invalidateCache()
                             }
-                            status = str("cloud.games.install.done")
+                            status = installDone
                         } else {
-                            status = str("cloud.games.install.failed")
+                            status = installFailed
                         }
                     } else {
                         setBusy(false)
-                        status = str("cloud.games.install.failed")
+                        status = installFailed
                     }
                 }
             }

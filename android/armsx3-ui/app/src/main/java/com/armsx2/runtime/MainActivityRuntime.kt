@@ -643,6 +643,7 @@ open class MainActivityRuntime : ComponentActivity() {
             }
 
             invoke {
+                var booted = false
                 try {
                     eState.value = EmuState.RUNNING
                     println("@@ANDROID_START_VM@@ kind=game path=${m_szGamefile.take(240)}")
@@ -704,7 +705,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     // The hold itself waits for the VM to come up. BIOS boots skip it.
                     if (bootCfg.autoProgressiveScan)
                         startAutoProgressiveScanHold()
-                    val booted = NativeApp.runVMThread(m_szGamefile)
+                    booted = NativeApp.runVMThread(m_szGamefile)
                     // A failed boot used to be indistinguishable from an instant game exit:
                     // runVMThread's result was dropped, so the app bounced back to the
                     // library with no message and no log. Surface the BootResult the bridge
@@ -747,7 +748,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (booted && syncSnapshot.autoPush && syncSnapshot.config != null) {
                         kotlin.concurrent.thread(name = "cloud-sync-exit") {
                             runCatching {
-                                val pushed = com.armsx2.CloudSync.pushAllSaves()
+                                val pushed = kotlinx.coroutines.runBlocking { com.armsx2.CloudSync.pushAllSaves() }
                                 android.util.Log.i("CloudSync", "game-exit sync pushed $pushed save(s)")
                             }
                         }
@@ -4931,7 +4932,7 @@ open class MainActivityRuntime : ComponentActivity() {
             val done = java.util.concurrent.CountDownLatch(1)
             kotlin.concurrent.thread(name = "cloud-sync-final") {
                 runCatching {
-                    val pushed = com.armsx2.CloudSync.pushAllSaves()
+                    val pushed = kotlinx.coroutines.runBlocking { com.armsx2.CloudSync.pushAllSaves() }
                     android.util.Log.i("CloudSync", "final sync pushed $pushed save(s)")
                 }.onFailure { android.util.Log.w("CloudSync", "final sync failed", it) }
                 done.countDown()

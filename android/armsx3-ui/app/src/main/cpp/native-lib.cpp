@@ -233,8 +233,12 @@ struct RPCSXLibrary : RPCSXApi {
     // refusing. These are the ones everything else rides on; anything older
     // still missing them must not masquerade as healthy.
     const void* required[] = {
-      result.initialize, result.boot, result.getState,
-      result.settingsSet, result.shutdown, result.surfaceEvent,
+      reinterpret_cast<const void*>(result.initialize),
+      reinterpret_cast<const void*>(result.boot),
+      reinterpret_cast<const void*>(result.getState),
+      reinterpret_cast<const void*>(result.settingsSet),
+      reinterpret_cast<const void*>(result.shutdown),
+      reinterpret_cast<const void*>(result.surfaceEvent),
     };
     for (const void* symbol : required) {
       if (symbol == nullptr) {

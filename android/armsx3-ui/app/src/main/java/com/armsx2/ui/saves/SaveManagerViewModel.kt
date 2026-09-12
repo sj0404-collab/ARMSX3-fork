@@ -130,7 +130,7 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
                         val name = "${file.parentFile?.name ?: "slot"}--${file.name}"
                         val doc = dir.findFile(name)
                             ?: dir.createFile("application/octet-stream", name) ?: return@runCatching false
-                        context.contentResolver.openInputStream(file)?.use { input ->
+                        context.contentResolver.openInputStream(android.net.Uri.fromFile(file))?.use { input ->
                             context.contentResolver.openOutputStream(doc.uri)?.use { output ->
                                 input.copyTo(output)
                             } != null

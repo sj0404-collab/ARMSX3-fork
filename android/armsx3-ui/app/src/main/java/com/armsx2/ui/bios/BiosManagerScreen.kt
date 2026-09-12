@@ -2,6 +2,7 @@ package com.armsx2.ui.bios
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -112,7 +113,7 @@ fun BiosManagerScreen(onBack: () -> Unit, game: com.armsx2.GameInfo? = null) {
         if (uri != null) {
             // Resolve the SAF tree URI to a POSIX path.
             val posixPath = runCatching {
-                com.armsx2.runtime.MainActivityRuntime.resolveTreeUriToPosix(uri)
+                com.armsx2.runtime.MainActivityRuntime.resolveTreeUriToPosix(uri.toString())
             }.getOrNull()
             if (posixPath != null) {
                 // Refuse directories that are not writable or hold no firmware:
