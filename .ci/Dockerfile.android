@@ -1,0 +1,65 @@
+# XENO / ARMS3 Android ARM64 build environment.
+#
+# Bakes the whole Android toolchain so the APK job never has to touch the
+# network at build time: JDK 21, cmdline-tools, NDK 29 (clang 21), SDK cmake
+# 3.30.5 (ships ninja), and the android-37 platform that AGP resolves for
+# compileSdk 37. Built once, cached on GHCR, reused by every run.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ANDROID_HOME=/opt/android-sdk
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+# UID 1001 is the GitHub-hosted runner user; the workflow runs the container
+# with -u $(id -u):$(id -g), so files written by the build land in the mounted
+# workspace owned by the runner and stay readable by actions/cache. The SDK is
+# chowned to that uid at the end so AGP can auto-install build-tools.
+ENV HOME=/home/runner
+ENV PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        file \
+        g++ \
+        git \
+        make \
+        ninja-build \
+        openjdk-21-jdk-headless \
+        patch \
+        pkg-config \
+        python3 \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# cmdline-tools "latest" (build 13114758, the same pin the Windows release
+# workflow proved against). Unzipped into the "latest" layout sdkmanager and
+# AGP expect.
+RUN mkdir -p "$ANDROID_HOME/cmdline-tools" \
+    && curl -sSL -o /tmp/ct.zip \
+        "https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip" \
+    && unzip -q /tmp/ct.zip -d "$ANDROID_HOME/cmdline-tools" \
+    && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
+    && rm /tmp/ct.zip
+
+# Pre-accept Android SDK licenses so AGP can auto-install build-tools at
+# resolve time without sdkmanager ever reading stdin.
+RUN mkdir -p "$ANDROID_HOME/licenses" \
+    && bash -c 'yes | sdkmanager --licenses --sdk_root="$ANDROID_HOME" > /dev/null' 2>&1 || true
+
+# NDK 29 (clang 21) is the pin the tree requires; SDK cmake 3.30.5 because
+# configure.sh points at $ANDROID_HOME/cmake/3.30.5/bin and the Android build
+# needs the ninja that ships with it.
+RUN sdkmanager --sdk_root="$ANDROID_HOME" \
+        "ndk;29.0.14206865" \
+        "cmake;3.30.5" \
+        "platforms;android-37.2"
+
+# There is no "platforms;android-37" package - only the minor line 37.2 - but
+# AGP looks up android-37 for compileSdk=37, exactly as in the release CI.
+RUN cp -R "$ANDROID_HOME/platforms/android-37.2" "$ANDROID_HOME/platforms/android-37"
+
+# Hand the SDK to the runner uid (and give it a home) so AGP can write its
+# auto-installed build-tools into ANDROID_HOME.
+RUN useradd --uid 1001 --create-home runner \
+    && chown -R 1001:1001 "$ANDROID_HOME"

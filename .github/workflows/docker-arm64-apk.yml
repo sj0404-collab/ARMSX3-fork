@@ -1,0 +1,209 @@
+# Docker ARM64 APK build for XENO / ARMS3.
+#
+# The whole Android build (LLVM in-tree + RPCS3 core + Gradle UI) runs inside
+# `xeno-android-ci`, the toolchain image staged in .ci/Dockerfile.android, so a
+# job only needs a stock ubuntu-24.04 runner + Docker. No Windows, no manual SDK
+# setup on the runner.
+#
+# Robustness contract:
+#   * the toolchain image is cached with docker layer cache (type=gha), so the
+#     SDK/NDK never need re-downloading between runs;
+#   * the warm build-a13 dir and the Gradle dependency cache are restored/saved
+#     with actions/cache, keyed exactly like the Windows release workflow;
+#   * an interrupted build STILL saves its caches (ninja is incremental), and the
+#     build step retries up to 3 times to ride out flaky pulls;
+#   * cache saves are best-effort (continue-on-error) - a cache problem must
+#     never fail an otherwise green build.
+
+name: Docker ARM64 APK
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "0.*"
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: APK ISA/API variant (legacy, a11, a13, a15)
+        default: "a13"
+
+concurrency:
+  group: docker-arm64-apk-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ARM64 APK in Docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # Cache keys are cheap O(1) git hash-objects. The warm build dir is keyed
+      # on the LLVM submodule PIN (not hashFiles over the LLVM tree, which is
+      # cancelled by GitHub after 120 s) plus a recipe fingerprint of the few
+      # scripts that actually change cmake arguments.
+      - name: Compute cache keys
+        id: cache-keys
+        shell: bash
+        run: |
+          # shellcheck disable=SC2086
+          LLVM_PIN="$(git -C 3rdparty/llvm/llvm rev-parse --short=12 HEAD)"
+          echo "llvm=${LLVM_PIN}" >> "$GITHUB_OUTPUT"
+
+          RECIPE="$(git hash-object \
+              android/configure.sh \
+              android/build-variants.sh \
+              android/stamp-git-version.sh | sha1sum | cut -c1-12)"
+          echo "a13-bin-key=xeno-docker-build-a13-${{ github.ref_name }}-llvm-${LLVM_PIN}-cfg-${RECIPE}" >> "$GITHUB_OUTPUT"
+
+          GRADLE_FILES="android/armsx3-ui/settings.gradle.kts
+                        android/armsx3-ui/gradle.properties
+                        android/armsx3-ui/gradle/wrapper/gradle-wrapper.properties
+                        android/armsx3-ui/app/build.gradle.kts"
+          [ -f android/armsx3-ui/gradle/libs.versions.toml ] && \
+            GRADLE_FILES="$GRADLE_FILES android/armsx3-ui/gradle/libs.versions.toml"
+          # Word-splitting GRADLE_FILES is the point; it is a newline-separated file list.
+          # shellcheck disable=SC2086
+          GRADLE_CFG="$(git hash-object $GRADLE_FILES | sha1sum | cut -c1-12)"
+          echo "gradle-key=gradle-Linux-${GRADLE_CFG}" >> "$GITHUB_OUTPUT"
+
+          # Park everything Gradle needs inside the workspace so the whole cache
+          # is one self-contained directory (same trick as the Windows flow).
+          echo "GRADLE_USER_HOME=${{ github.workspace }}/.gradle" >> "$GITHUB_ENV"
+
+      - name: Restore a13 build dir
+        uses: actions/cache/restore@v4
+        id: build-cache
+        with:
+          path: ${{ github.workspace }}/build-a13
+          key: ${{ steps.cache-keys.outputs.a13-bin-key }}
+          restore-keys: |
+            xeno-docker-build-a13-
+
+      - name: Restore Gradle cache
+        uses: actions/cache/restore@v4
+        id: gradle-cache
+        with:
+          path: ${{ github.workspace }}/.gradle
+          key: ${{ steps.cache-keys.outputs.gradle-key }}
+          restore-keys: |
+            gradle-Linux-
+
+      # The image rarely changes; type=gha layer cache restores the SDK/NDK
+      # layers in seconds on every run instead of re-staging ~4 GB up front.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Build toolchain image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .ci
+          file: Dockerfile.android
+          push: false
+          load: true
+          tags: xeno-android-ci:latest
+          cache-from: type=gha,scope=xeno-android-ci
+          cache-to: type=gha,mode=max,scope=xeno-android-ci
+
+      # librashader and libadrenotools are not submodules upstream; fetched by
+      # hand per the repository README.
+      - name: Fetch librashader
+        run: git clone --depth 1 https://github.com/SnowflakePowered/librashader 3rdparty/librashader
+
+      - name: Fetch libadrenotools
+        run: git clone --depth 1 --recursive https://github.com/bylaws/libadrenotools android/armsx3-ui/app/src/main/cpp/libadrenotools
+
+      # The actual build, fully inside the container. The workspace is mounted
+      # read-write at /src so build-a13 and the gradle cache live under the
+      # workspace and are saved by the cache steps below. OUT_DIR is /src/out
+      # so the APK lands on the mounted volume for artifacts.
+      - name: Build ARM64 APK in Docker container
+        shell: bash
+        env:
+          VARIANTS: "${{ github.event.inputs.variant || 'a13' }}"
+        run: |
+          # Retry the whole build (ninja is incremental, so re-entry is cheap;
+          # the exposure is Gradle pulling resolve-time deps on a cold cache).
+          status=1
+          for i in 1 2 3; do
+            if docker run --rm \
+                -v "${{ github.workspace }}:/src" \
+                -w /src \
+                -u "$(id -u):$(id -g)" \
+                -e ANDROID_HOME=/opt/android-sdk \
+                -e JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 \
+                -e GRADLE_USER_HOME=/src/.gradle \
+                -e OUT_DIR=/src/out \
+                -e CMAKE_VERSION=3.30.5 \
+                -e VARIANTS="$VARIANTS" \
+                xeno-android-ci:latest \
+                bash android/build-variants.sh; then
+              status=0
+              break
+            fi
+            echo "::warning::build attempt $i failed, retrying in 20s"
+            sleep 20
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::error::build failed after 3 attempts"
+            exit 1
+          fi
+          echo "APK_NAME=$(find "${{ github.workspace }}/out" -maxdepth 1 -name '*.apk' -printf '%f\n' | head -1)" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xeno-arm64-apk-docker
+          path: ${{ github.workspace }}/out/*.apk
+          if-no-files-found: error
+
+      # Save under run-unique keys so a partially built (possibly failed) dir is
+      # still cached - ninja resumes it next run. Runs even when build failed.
+      - name: Save a13 build dir
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/build-a13
+          key: ${{ steps.cache-keys.outputs.a13-bin-key }}-${{ github.run_id }}
+
+      - name: Save Gradle cache
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.gradle
+          key: ${{ steps.cache-keys.outputs.gradle-key }}-${{ github.run_id }}
+
+      - name: Create GitHub Release
+        # Manual dispatches on master are for producing an artifact, not a
+        # release; publication only makes sense for a tag. The `gh release view`
+        # guard makes a duplicate (e.g. the Windows workflow already released
+        # the same tag) harmless instead of a red run.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "::warning::release ${{ github.ref_name }} already exists, skipping"
+          else
+            gh release create "${{ github.ref_name }}" \
+              --title "XENO ${{ github.ref_name }}" \
+              --notes "ARMS3 APK (arm64-v8a), Docker build - run ${{ github.run_id }}" \
+              ${{ github.workspace }}/out/*.apk
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
