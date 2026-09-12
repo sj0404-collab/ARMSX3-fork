@@ -113,7 +113,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .ci
-          file: Dockerfile.android
+          file: .ci/Dockerfile.android
           push: false
           load: true
           tags: xeno-android-ci:latest
